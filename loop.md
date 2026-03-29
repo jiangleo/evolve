@@ -89,14 +89,11 @@ No contract phase. No skip status. Stuck = code stops the loop via should_stop()
 ### Routing
 
 ```python
-if progress["phase"] == "init":
-    -> Init not complete, prompt to run /evolve
-
-elif progress["phase"] == "build":
+if progress["phase"] == "build":
     # Check if all features completed
     # Read spec.md to extract spec_features
     # if all spec_features in progress["completed_features"] -> Done Flow
-    -> Build Flow
+    -> Build Flow (dispatch B)
 
 elif progress["phase"] == "eval":
     -> Eval Flow (dispatch C)
@@ -105,12 +102,10 @@ elif progress["phase"] == "eval":
 ### Last Row Mapping
 
 ```
-No data rows              -> Init not complete
-plan/keep                 -> Build (pick first feature from spec)
 build/keep                -> Eval (dispatch C to evaluate)
-build/crash               -> Build (fix the crash)
-eval/pass                 -> Build (next unfinished feature)
-eval/fail                 -> Build (read strategy.md, C already wrote next action)
+build/crash               -> Build (dispatch B to fix)
+eval/pass                 -> Build (dispatch B for next unfinished feature)
+eval/fail                 -> Build (dispatch B; C already wrote strategy.md)
 All features pass         -> Done
 ```
 
@@ -307,12 +302,12 @@ Output report to user, stop the loop.
 
 ## File Permission Matrix (V2)
 
-| File | Human | O | B | C |
-|------|-------|---|---|---|
-| program.md | read/write | read-only | read-only | read-only |
-| eval.yml | read/write | read-only | read-only | read-only |
-| adapter.py | read/write | read-only | read-only | read-only |
-| strategy.md | read | - | read-only | read/write |
-| results.tsv | read | read | append | append |
-| run.log | read | append | append | append |
-| Project code | read/write | - | read/write | read-only |
+| File | O | B | C |
+|------|---|---|---|
+| program.md | read-only | read-only | read-only |
+| eval.yml | read-only | read-only | read-only |
+| adapter.py | read-only | read-only | read-only |
+| strategy.md | - | read-only | read/write |
+| results.tsv | read | append | append |
+| run.log | append | append | append |
+| Project code | - | read/write | read-only |
