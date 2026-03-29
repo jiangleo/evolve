@@ -12,6 +12,7 @@ import csv
 import importlib.util
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -20,8 +21,18 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 HEADER_FIELDS = ["commit", "phase", "feature", "scores", "total", "status", "summary"]
-VALID_PHASES = {"plan", "build", "contract", "eval"}
-VALID_STATUSES = {"keep", "pass", "fail", "crash", "skip", "reset"}
+VALID_PHASES = {"plan", "build", "eval"}
+VALID_STATUSES = {"keep", "pass", "fail", "crash", "reset"}
+
+HARD_LIMITS = {
+    "max_rounds_total": 100,
+    "max_rounds_per_feature": 30,
+    "max_consecutive_crashes": 5,
+    "max_consecutive_fails": 10,
+    "max_flat_after_pivot": 3,
+}
+
+INDEPENDENT_EVALUATORS = ["codex", "claude"]
 
 REQUIRED_ADAPTER_FUNCTIONS = ["setup", "run_checks", "teardown"]
 
@@ -117,6 +128,113 @@ def load_eval_config(eval_yml_path: str) -> list[dict]:
 
     return dimensions
 
+
+# ---------------------------------------------------------------------------
+# Trajectory Analysis
+# ---------------------------------------------------------------------------
+
+def analyze_trajectory(results_tsv: str, feature: str, window: int = 3) -> dict:
+    """
+    Extract recent eval scores for a feature, determine trend.
+
+    Returns:
+        {"trend": "rising"|"flat"|"falling"|"insufficient",
+         "scores": [float, ...], "rounds": int, "latest": float}
+
+    Logic:
+        - Fewer than window eval rows -> "insufficient"
+        - latest - earliest > +0.5 -> "rising"
+        - latest - earliest < -0.5 -> "falling"
+        - Otherwise -> "flat"
+    Only reads eval phase rows, ignores build/crash.
+    """
+    path = Path(results_tsv)
+    if not path.exists():
+        return {"trend": "insufficient", "scores": [], "rounds": 0, "latest": 0.0}
+
+    with open(path, newline="") as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+
+    scores = []
+    for r in rows:
+        if r.get("phase") == "eval" and r.get("feature") == feature:
+            try:
+                scores.append(float(r["total"]))
+            except (ValueError, TypeError, KeyError):
+                continue
+
+    if len(scores) < window:
+        return {
+            "trend": "insufficient",
+            "scores": scores,
+            "rounds": len(scores),
+            "latest": scores[-1] if scores else 0.0,
+        }
+
+    recent = scores[-window:]
+    diff = recent[-1] - recent[0]
+
+    if diff > 0.5:
+        trend = "rising"
+    elif diff < -0.5:
+        trend = "falling"
+    else:
+        trend = "flat"
+
+    return {"trend": trend, "scores": recent, "rounds": len(scores), "latest": recent[-1]}
+
+
+# ---------------------------------------------------------------------------
+# Stop Conditions
+# ---------------------------------------------------------------------------
+
+def should_stop(results_tsv: str, feature: str) -> tuple:
+    """
+    Called BEFORE AI is dispatched. Returns (stop: bool, reason: str).
+    AI does not participate in this decision.
+    """
+    progress = read_progress(results_tsv)
+    trajectory = analyze_trajectory(results_tsv, feature)
+
+    if progress["total_iterations"] >= HARD_LIMITS["max_rounds_total"]:
+        return True, "Total round limit reached"
+
+    if progress.get("feature_iterations", 0) >= HARD_LIMITS["max_rounds_per_feature"]:
+        return True, f"{feature}: per-feature round limit reached"
+
+    if progress["consecutive_crashes"] >= HARD_LIMITS["max_consecutive_crashes"]:
+        return True, f"{feature}: consecutive crashes"
+
+    if progress["consecutive_fails"] >= HARD_LIMITS["max_consecutive_fails"]:
+        return True, f"{feature}: consecutive eval failures"
+
+    pivots = progress.get("pivots_on_this_feature", 0)
+    if trajectory["trend"] == "flat" and pivots >= HARD_LIMITS["max_flat_after_pivot"]:
+        return (True,
+                f"{feature}: pivoted {HARD_LIMITS['max_flat_after_pivot']} "
+                f"times, still no improvement")
+
+    return False, ""
+
+
+# ---------------------------------------------------------------------------
+# Independent Evaluator
+# ---------------------------------------------------------------------------
+
+def get_evaluator() -> str | None:
+    """Try each evaluator in order, return first available CLI command. None = unavailable."""
+    for name in INDEPENDENT_EVALUATORS:
+        if shutil.which(name) is not None:
+            return name
+    return None
+
+
+def validate_eval_result(result: dict) -> None:
+    """Validate that an independent evaluator was used. Raises ValueError if not."""
+    if not result.get("independent_evaluator_used"):
+        raise ValueError("Eval invalid: no independent evaluator was called")
+
+
 # ---------------------------------------------------------------------------
 # TSV Helpers
 # ---------------------------------------------------------------------------
@@ -138,16 +256,13 @@ def read_progress(results_tsv: str) -> dict:
     """
     Read results.tsv and return current phase + decision info.
 
-    State machine:
+    State machine (V2):
     - No data rows -> init
     - Last row plan/keep -> build
-    - Last row build/keep -> eval
-    - Last row build/crash -> build (retry or skip)
+    - Last row build/keep -> eval (dispatch C)
+    - Last row build/crash -> build (fix)
     - Last row eval/pass -> build (next feature)
-    - Last row eval/fail -> build (fix) or reset
-    - Last row eval/skip -> build (next feature)
-    - Last row contract/pass -> build (start coding)
-    - Last row contract/fail -> build (rewrite contract)
+    - Last row eval/fail -> build (C already updated strategy.md)
     """
     path = Path(results_tsv)
     rows = []
@@ -168,12 +283,14 @@ def read_progress(results_tsv: str) -> dict:
         "completed_features": [],
         "skipped_features": [],
         "last_pass_commit": None,
+        "feature_iterations": 0,
+        "pivots_on_this_feature": 0,
     }
 
     if not rows:
         return result
 
-    # Collect completed and skipped features
+    # Collect completed features (no skip in V2)
     for row in rows:
         phase = row.get("phase", "")
         status = row.get("status", "")
@@ -184,9 +301,6 @@ def read_progress(results_tsv: str) -> dict:
             if feature not in result["completed_features"] and feature != "-":
                 result["completed_features"].append(feature)
             result["last_pass_commit"] = commit
-        elif status == "skip":
-            if feature not in result["skipped_features"] and feature != "-":
-                result["skipped_features"].append(feature)
 
     last = rows[-1]
     last_phase = last.get("phase", "")
@@ -215,11 +329,17 @@ def read_progress(results_tsv: str) -> dict:
             break
         elif row.get("phase") == "build" and row.get("status") == "keep":
             continue
-        elif row.get("phase") in ("plan", "contract"):
+        elif row.get("phase") == "plan":
             break
     result["has_been_reset"] = has_been_reset
 
-    # Determine current phase from last row
+    # Count feature iterations (all rows for current feature)
+    if last_feature and last_feature != "-":
+        result["feature_iterations"] = sum(
+            1 for r in rows if r.get("feature") == last_feature
+        )
+
+    # Determine current phase from last row (V2: no contract, no skip)
     if last_phase == "plan" and last_status == "keep":
         result["phase"] = "build"
     elif last_phase == "build" and last_status == "keep":
@@ -228,19 +348,11 @@ def read_progress(results_tsv: str) -> dict:
     elif last_phase == "build" and last_status == "crash":
         result["phase"] = "build"
         result["current_feature"] = last_feature if last_feature != "-" else None
-    elif last_phase == "contract" and last_status == "pass":
-        result["phase"] = "build"
-        result["current_feature"] = last_feature if last_feature != "-" else None
-    elif last_phase == "contract" and last_status == "fail":
-        result["phase"] = "build"
-        result["current_feature"] = last_feature if last_feature != "-" else None
     elif last_phase == "eval" and last_status == "pass":
         result["phase"] = "build"
     elif last_phase == "eval" and last_status == "fail":
         result["phase"] = "build"
         result["current_feature"] = last_feature if last_feature != "-" else None
-    elif last_phase == "eval" and last_status == "skip":
-        result["phase"] = "build"
     else:
         result["phase"] = "init"
 
