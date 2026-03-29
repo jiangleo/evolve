@@ -41,6 +41,7 @@ Feature 6: README        ← 文档，最后改
 ```
 Round  Time   Phase  Feature           Score   Status  发生了什么
 ─────  ─────  ─────  ────────────────  ──────  ──────  ────────────────────────────────
+ 0     00:58  setup  -                 -       -       创建 .evolve/、去安全规则、写 program.md
  1     01:12  build  prepare.py        -       keep    加了 6 个新函数 + 2 个常量
  2     01:14  eval   prepare.py        8.9     pass    codex 评 9/10，一次过
  3     01:19  build  tests             -       keep    46 个新测试全过
@@ -65,7 +66,9 @@ Round  Time   Phase  Feature           Score   Status  发生了什么
 
 ### 关键数据
 
-- **总耗时**：40 分钟（01:12 → 01:52，从第一个 commit 到最后一个 commit）
+- **总耗时**：57 分钟（00:58 设置开始 → 01:55 全部完成）
+  - 设置阶段：14 分钟（00:58 → 01:12，创建 .evolve/ + 去规则 + 配置）
+  - 自动执行：43 分钟（01:12 → 01:55，18 轮 build/eval）
 - **平均每轮**：~2.5 分钟（含 build/eval + codex 调用 + /loop 1m 等待）
 - **总轮次**：18（12 轮 build + 6 轮 eval pass + 2 轮 eval fail = 18 轮有效执行）
 - **一次过的 feature**：4/6（prepare.py, agent definitions, SKILL.md, README）
@@ -122,7 +125,7 @@ loop.md 耗时最长，因为它描述的是系统自身的运行逻辑。改自
 
 ## 结论
 
-18 轮，40 分钟（01:12 → 01:52），一个 AI 系统用自己的 V1 版本把自己重写成了 V2。
+18 轮，57 分钟（00:58 → 01:55），一个 AI 系统用自己的 V1 版本把自己重写成了 V2。
 
 这不是 AGI。这是一个设计良好的 harness + 一个足够聪明的模型 + 一个愿意按 "Danger Mode" 的人类。
 
