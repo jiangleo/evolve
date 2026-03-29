@@ -88,6 +88,15 @@ No contract phase. No skip status. Stuck = code stops the loop via should_stop()
 
 ### Routing
 
+`read_progress()` returns the NEXT phase to execute:
+
+| Last results.tsv row | read_progress phase | Dispatch |
+|---------------------|---------------------|----------|
+| build/keep | eval | C (evaluate the build) |
+| build/crash | build | B (fix the crash) |
+| eval/pass | build | B (next feature) |
+| eval/fail | build | B (C already wrote strategy.md) |
+
 ```python
 if progress["phase"] == "build":
     # Check if all features completed
@@ -97,16 +106,6 @@ if progress["phase"] == "build":
 
 elif progress["phase"] == "eval":
     -> Eval Flow (dispatch C)
-```
-
-### Last Row Mapping
-
-```
-build/keep                -> Eval (dispatch C to evaluate)
-build/crash               -> Build (dispatch B to fix)
-eval/pass                 -> Build (dispatch B for next unfinished feature)
-eval/fail                 -> Build (dispatch B; C already wrote strategy.md)
-All features pass         -> Done
 ```
 
 ---
@@ -119,7 +118,7 @@ O dispatches B subagent. B reads program.md + strategy.md.
 
 Read `.evolve/spec.md`, find the first feature not in `progress["completed_features"]`, in order.
 
-### New Feature (after plan/keep or eval/pass)
+### New Feature (after eval/pass)
 
 B starts fresh on the next feature. No sprint contract needed (V2 removed contracts).
 
