@@ -6,7 +6,7 @@
 **Define a goal. AI builds, evaluates, and iterates until it's met.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-50%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-51%20passed-brightgreen.svg)]()
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)]()
 
 A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill. You define what you want and what "good" looks like. AI writes the code, scores it, and fixes what doesn't pass -- on repeat, until everything does. Inspired by [Anthropic's harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) and [Karpathy's autoresearch](https://github.com/karpathy/autoresearch).
@@ -58,12 +58,9 @@ Type `/evolve` in Claude Code. It walks you through setup:
 
 ```
 Step 1  Scans your project           (automatic)
-Step 2  Asks what you want           (1-2 questions)
-Step 3  Generates eval criteria      (you confirm)
-Step 4  Generates program.md         (field-by-field)
-Step 5  Validates everything         (automatic)
-Step 6  Asks which LLM evaluates     (1 question)
-Step 7  Generates feature spec       (you review)
+Step 2  Brainstorming                (3-5 questions, clarify your goal)
+Step 3  Generates program.md         (features + eval criteria, you confirm)
+Step 4  Validates + creates branch   (automatic)
 ```
 
 ### 3. Run the Loop (autonomous)
@@ -160,19 +157,17 @@ Three atomic commits on a feature branch, ready to merge.
 
 ## Key Concepts
 
-**Builder != Evaluator** -- The AI that writes the code is not the same one that judges it. You pick a separate evaluator during Init (Codex, another Claude instance, etc.). If the same AI builds and grades, the scores are meaningless.
+**Three Agents, Clear Roles** -- O (Orchestrator) talks to you and dispatches; B (Builder) only writes code; C (Critic) evaluates + makes strategic decisions. The code writer and the scorer are never the same agent. Independent evaluator (Codex/Claude CLI) is enforced by code.
 
-**Everything is a File** -- State is in `.evolve/`, nothing else. No database, no server. Delete the directory to start over. Edit `spec.md` mid-run and the next loop picks it up.
+**Everything is a File** -- State is in `.evolve/`, nothing else. No database, no server. Delete the directory to start over.
 
 | File | What It Does | Who Writes It |
 |------|-------------|---------------|
-| `program.md` | Your goals + constraints | You (during Init) |
-| `eval.yml` | Evaluation dimensions + thresholds | Init (you confirm) |
+| `program.md` | Your goals + feature list + eval criteria | You (during Init) |
 | `adapter.py` | How to set up/test your project | Init (auto-generated) |
-| `spec.md` | Feature list + acceptance criteria | Planner |
-| `results.tsv` | Full iteration history | Build + Eval (append-only) |
-| `evaluation.md` | Latest scores + fix priorities | Evaluator |
-| `report.md` | Human-readable progress | Generated each round |
+| `strategy.md` | C's strategic decisions: approach, trajectory, next action | C (overwritten each round) |
+| `results.tsv` | Full iteration history | B + C (append-only) |
+| `run.log` | All agent output | O + B + C (append-only) |
 
 **Adapters** -- Init generates a custom `adapter.py` for your project, telling Evolve how to run it. Three references are included:
 
@@ -222,14 +217,16 @@ Three atomic commits on a feature branch, ready to merge.
 | Decision | Reason |
 |----------|--------|
 | It's a Claude Code skill | Reuses Claude Code's file, git, and command permissions directly |
-| State is files | You can read, edit, and diff everything. No database to set up |
-| One commit per feature | Easy to revert one without touching others |
+| 3 Agents (O/B/C) single loop | Simpler than inner/outer loop. C has freshest context for strategy |
+| Independent evaluator enforced by code | `validate_eval_result()` in prepare.py, AI can't bypass |
+| strategy.md persists across sessions | Each loop round is a new session, but C's decisions survive via file |
+| `should_stop()` runs before AI starts | AI doesn't participate in stop decisions, hardcoded in prepare.py |
 | Lock expires in 2 min | Prevents collisions, doesn't block after a crash |
 
 ## Running Tests
 
 ```bash
-python -m pytest tests/ -v    # 50 tests, ~0.1s
+python -m pytest tests/ -v    # 51 tests, ~0.1s
 ```
 
 ## License

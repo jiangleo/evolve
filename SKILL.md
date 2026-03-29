@@ -5,16 +5,18 @@ triggers:
   - /evolve
 ---
 
-# Evolve: Define Goal -> Auto Build -> Auto Evaluate -> Iterate Until Done
+# Evolve V2: Define Goal → Auto Build → Auto Evaluate → Iterate Until Done
 
 ## Overview
 
-Three-phase autonomous loop: Init (interactive) -> Build -> Eval (auto loop).
+Three agents, one loop: O (Orchestrator) → B (Builder) → C (Critic) → B → C → ... → Done
 
-- **Init**: This file. User participates, guided configuration.
-- **Loop**: `loop.md`. AI runs automatically, user not involved (driven by `/loop 1m /evolve`).
+- **Init**: This file. O guides user through 4 steps.
+- **Loop**: `loop.md`. B and C run automatically via `/loop 1m /evolve`.
 
 Hard dependencies: Python 3.8+, Git. Everything else is declared by the project adapter.
+
+Agent definitions: `agents/orchestrator.md`, `agents/builder.md`, `agents/critic.md`.
 
 ---
 
@@ -22,178 +24,138 @@ Hard dependencies: Python 3.8+, Git. Everything else is declared by the project 
 
 ```
 /evolve triggered
-    |
+    │
 Check if .evolve/ exists?
-    |-- exists -> Resume logic (see table below)
-    +-- not exists -> First-time setup (start at Step 1)
+    ├── not exists → First-time setup (Step 1)
+    └── exists → Check state:
+         ├── no adapter.py → Step 3
+         ├── no program.md → Step 3 (generate program.md)
+         ├── no results.tsv or empty → Step 4 (validation)
+         └── results.tsv has data → Enter loop (loop.md)
 ```
-
-### Resume Logic
-
-| Detected State | Behavior |
-|---------------|----------|
-| `.evolve/` exists but no `adapter.py` | Start from Step 3 |
-| `adapter.py` exists, no `program.md` | Start from Step 4 |
-| `program.md` exists, no `spec.md` | Start from Step 5 (validation) |
-| `spec.md` exists, `results.tsv` empty or missing | Prompt to start the loop |
-| `results.tsv` has data | Show progress report, prompt to continue |
 
 ---
 
-## Init Workflow
+## Init Flow (4 steps)
 
-### Step 1 -- Project Scan (automatic, no interaction)
+### Step 1: Project Scan (automatic)
 
 Scan language, framework, test framework, directory structure. Output brief summary:
 
-> "Detected FastAPI + PostgreSQL project, has pytest, entry point at app/main.py"
+> "Detected Node.js + Express project, has vitest, entry at app/main.js"
 
-### Step 2 -- Understand Goal (1-2 questions)
+### Step 2: Brainstorming (interactive, core step)
 
-- "What do you want to build/improve? One sentence."
-- If description is vague: "What are the core features? List them."
-
-### Step 3 -- Research Eval Criteria + Generate Adapter (automatic)
-
-1. Based on product type + tech stack, research industry evaluation methods
-2. Read `.claude/skills/evolve/adapters/base.py` for interface definition
-3. Read `.claude/skills/evolve/adapters/web_app.py` or `teaching.py` as reference implementation
-4. Auto-generate project-specific `.evolve/adapter.py` + `.evolve/eval.yml`
-
-Show evaluation dimensions for user confirmation:
+O talks to user following /brainstorming principles:
+- One question at a time
+- Multiple choice preferred
+- Goal: help user clarify three things — what they want, what "good" means, what's off limits
 
 ```
-Suggested evaluation dimensions:
-1. Functional Completeness -- deterministic, npm test, threshold 7.0
-2. Code Quality -- llm-judged, threshold 7.0
-3. Data Consistency -- deterministic, integration tests, threshold 7.0
+Q1: "What do you want to build? One sentence."
 
-Want to adjust?
+Q2: "Core features? I suggest based on your project:
+     A. JWT authentication
+     B. Chat endpoint
+     C. File upload
+     D. Other: ___"
+
+Q3: "What matters for quality?
+     A. Tests pass (deterministic)
+     B. Code quality (AI review)
+     C. API design (AI review)
+     D. Other: ___"
+
+Q4: "Score threshold per dimension? Default 7/10."
+
+Q5: "Constraints?
+     A. No new dependencies
+     B. Don't touch xxx directory
+     C. No limits
+     D. Other: ___"
 ```
 
-User confirms/adjusts -> write to `.evolve/eval.yml` and `.evolve/adapter.py`.
+3-5 questions, ~2 minutes. O may suggest skills for user to install based on project type:
 
-#### eval.yml Format
-
-```yaml
-dimensions:
-  - name: Functional Completeness
-    type: deterministic
-    cmd: npm test
-    threshold: 7.0
-  - name: Code Quality
-    type: llm-judged
-    threshold: 7.0
+```
+"Detected web app project. Recommend installing:
+  - /qa → systematic testing during evaluation
+  - /browse → live page inspection
+  Optional — works without them, but evaluation quality improves."
 ```
 
-#### adapter.py Interface
+### Step 3: Generate program.md (automatic + user review)
 
-```python
-prerequisites = [{"name": "node", "check": "node --version", ...}]
-
-def setup(project_dir: str) -> dict:       # -> {"status": "ready"|"crash", ...}
-def run_checks(project_dir, feature) -> dict:  # -> {"scores": {...}, "details": "..."}
-def teardown(info: dict) -> None:
-```
-
-### Step 4 -- Guide program.md Creation (field-by-field interaction)
-
-Based on previously collected info, pre-fill most fields. Confirm field by field:
+Auto-generate from Step 1 scan + Step 2 conversation:
 
 ```markdown
 # Program
 
 ## Product Requirements
-<!-- Collected from Step 2 -->
+<from Step 2>
+
+## Feature List
+- [ ] Feature A
+- [ ] Feature B
+- [ ] Feature C
+
+## Evaluation Criteria
+dimensions:
+  - name: <dimension name>
+    type: deterministic | llm-judged
+    cmd: <command>  # optional, for deterministic
+    threshold: <float>
 
 ## Technical Constraints
-- Stack: <!-- Pre-filled from Step 1 scan -->
-- Dependency limits: Only use specified stack and existing dependencies
-- Allowed new dependencies: <!-- User confirms -->
-- No-go zones: <!-- User fills -->
+- Stack: <from Step 1 scan>
+- Dependency limits: <from user>
+- No-go zones: <from user>
 
 ## Agent Rules
 - Do not modify program.md
 - Do not modify files under .claude/skills/evolve/
-- Do not install new packages (unless allowed above)
-- One git commit per feature
-- Redirect all process output to .evolve/run.log
-- Never stop -- loop until all features pass/skip or human interrupts
+- Git commit after each agent run
+- Build output appended to .evolve/run.log
 ```
 
-Generate `.evolve/program.md`.
+Show to user: "Here's your program.md. Want to adjust?"
 
-### Step 5 -- Validation (automatic)
+Also generate `.evolve/adapter.py`:
+1. Read `adapters/base.py` for interface definition
+2. Read `adapters/web_app.py` or `adapters/teaching.py` as reference
+3. Auto-generate project-specific adapter
 
-#### Level 1: Structural Validation (blocking)
+### Step 4: Validation + Branch Creation (automatic)
 
-| Check | Rule | Failure Message |
-|-------|------|----------------|
-| Product requirements | At least 1 non-empty | "Product requirements are empty. Describe what you want to build." |
-| Template placeholders | No `{{` or `[fill...]` | "program.md line N is still a placeholder" |
-| adapter.py | Exists and importable | "adapter.py load failed: {error}" |
-| eval.yml | At least 1 eval dimension | "No eval dimensions. Re-run /evolve" |
+#### Validation
 
-#### Level 2: Semantic Validation (warnings)
-
-| Check | Rule | Warning |
+| Check | Rule | Failure |
 |-------|------|---------|
-| Requirement granularity | Single item > 200 chars | "Requirement N is too long, consider splitting" |
-| Eval threshold | Within 1-10 range | "Threshold N is outside 1-10 range" |
+| Product requirements | At least 1 non-empty | "Product requirements are empty." |
+| Eval dimensions | At least 1 | "No eval dimensions." |
+| Template placeholders | No `{{` or `[fill...]` | "program.md line N is still a placeholder" |
+| adapter.py | Importable | "adapter.py load failed: {error}" |
+| Python 3.8+ | Available | "Python 3.8+ required" |
+| Git | Available | "Git required" |
+| Uncommitted changes | Warn | "!! Recommend committing first" |
 
-#### Level 3: Environment Validation (info)
+#### Setup
 
 ```python
 import sys
 sys.path.insert(0, '.claude/skills/evolve')
 from prepare import load_adapter, load_eval_config
-
-# Validate adapter
-adapter = load_adapter(".evolve/adapter.py")
-
-# Validate eval.yml
-dims = load_eval_config(".evolve/eval.yml")
-
-# Check adapter prerequisites
-for prereq in adapter.prerequisites:
-    # Run prereq["check"], failure -> prompt install command
 ```
 
-Output:
+- `git checkout -b evolve/<tag>`
+- Generate `.evolve/adapter.py` (from reference adapters + project scan)
+- Create `.evolve/results.tsv` (header only)
+- Create `.evolve/strategy.md` (empty template)
+- Create `.evolve/run.log` (empty)
+- Add `.evolve/` to `.gitignore`
 
 ```
-OK Product requirements: 5 items
-OK Eval dimensions: 3 (Functional Completeness, Code Quality, Data Consistency)
-OK adapter: loadable
-OK python3 -- 3.11.5
-OK git -- 2.43.0
-!! Git working tree has uncommitted changes (recommend committing first)
-
-Validation passed. Enter Planner phase? (Y/n)
-```
-
-### Step 6 -- Choose Evaluator (one question)
-
-"What should evaluate the output?"
-- A. Codex (recommended, most objective as independent evaluator)
-- B. Claude (separate instance)
-- C. Other
-
-Record choice in `.evolve/program.md` under `## Evaluation Method`.
-
-### Step 7 -- Planner Generates spec.md (automatic)
-
-1. Create git branch: `git checkout -b evolve/<tag>`
-2. Read `.evolve/program.md` + `.evolve/eval.yml`
-3. Generate `.evolve/spec.md` (feature list + acceptance criteria)
-4. Create `.evolve/results.tsv` (header row)
-5. Create `.evolve/run.log` (empty)
-6. Add `.evolve/` to `.gitignore`
-
-Show spec.md for user review. After confirmation:
-
-```
-Init complete. Run /loop 1m /evolve to start the autonomous loop.
+Init complete. Run /loop 1m /evolve to start.
 ```
 
 ---
@@ -206,11 +168,15 @@ python -c "import sys; sys.path.insert(0, '.claude/skills/evolve'); from prepare
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `load_eval_config` | `(eval_yml_path) -> list[dict]` | Parse eval.yml, return dimension list |
-| `load_adapter` | `(adapter_path) -> module` | Load adapter from file path |
-| `append_result` | `(results_tsv, row) -> None` | Append one row to results.tsv |
-| `read_progress` | `(results_tsv) -> dict` | Read current progress and state machine state |
-| `generate_report` | `(results_tsv) -> str` | Generate structured progress report |
-| `acquire_lock` | `(evolve_dir) -> dict` | Acquire concurrency lock |
-| `update_lock` | `(evolve_dir, phase, feature) -> None` | Update heartbeat |
-| `release_lock` | `(evolve_dir) -> None` | Release lock |
+| `load_eval_config` | `(path) -> list[dict]` | Parse eval.yml, return dimension list |
+| `load_adapter` | `(path) -> module` | Load adapter from file path |
+| `append_result` | `(tsv, row) -> None` | Append one row to results.tsv |
+| `read_progress` | `(tsv) -> dict` | Read progress and state machine state |
+| `generate_report` | `(tsv) -> str` | Generate structured progress report |
+| `analyze_trajectory` | `(tsv, feature, window=3) -> dict` | Trend analysis (rising/flat/falling) |
+| `should_stop` | `(tsv, feature) -> (bool, str)` | Code-enforced stop conditions |
+| `validate_eval_result` | `(result) -> None` | Enforce independent evaluator |
+| `get_evaluator` | `() -> str\|None` | Find available evaluator CLI |
+| `acquire_lock` | `(dir) -> dict` | Acquire concurrency lock |
+| `update_lock` | `(dir, phase, feature) -> None` | Update heartbeat |
+| `release_lock` | `(dir) -> None` | Release lock |
