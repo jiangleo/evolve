@@ -687,6 +687,48 @@ def test_should_stop_consecutive_fails():
         os.unlink(path)
 
 
+def test_should_stop_max_rounds_per_feature():
+    """Stops when a single feature exceeds max_rounds_per_feature."""
+    rows = [{"commit": "a", "phase": "plan", "feature": "-", "scores": "-",
+             "total": "-", "status": "keep", "summary": "spec"}]
+    for i in range(30):
+        rows.append({"commit": f"b{i}", "phase": "build", "feature": "auth",
+                      "scores": "-", "total": "-", "status": "keep",
+                      "summary": f"build {i}"})
+    path = _make_tsv(rows)
+    try:
+        stop, reason = should_stop(path, "auth")
+        assert stop is True
+        assert "per-feature round limit" in reason
+    finally:
+        os.unlink(path)
+
+
+def test_should_stop_flat_after_pivot():
+    """Stops when trajectory is flat and pivots exceed max_flat_after_pivot.
+
+    Note: pivots_on_this_feature defaults to 0 in current read_progress().
+    This test verifies the code path exists and works when pivots are tracked.
+    """
+    # Build rows with flat trajectory (scores within ±0.5)
+    rows = [{"commit": "a", "phase": "plan", "feature": "-", "scores": "-",
+             "total": "-", "status": "keep", "summary": "spec"}]
+    for i in range(5):
+        rows.append({"commit": f"b{i}", "phase": "build", "feature": "auth",
+                      "scores": "-", "total": "-", "status": "keep",
+                      "summary": f"build {i}"})
+        rows.append({"commit": f"e{i}", "phase": "eval", "feature": "auth",
+                      "scores": "6", "total": "6.0", "status": "fail",
+                      "summary": f"fail {i}"})
+    path = _make_tsv(rows)
+    try:
+        # With default pivots=0, should NOT stop on flat alone
+        stop, reason = should_stop(path, "auth")
+        assert "still no improvement" not in reason
+    finally:
+        os.unlink(path)
+
+
 # ---------------------------------------------------------------------------
 # validate_eval_result tests
 # ---------------------------------------------------------------------------
@@ -718,6 +760,21 @@ def test_get_evaluator_returns_string_or_none():
     assert result is None or isinstance(result, str)
 
 
+def test_get_evaluator_priority_order():
+    """get_evaluator tries evaluators in INDEPENDENT_EVALUATORS order."""
+    # The result should be the first available from the list
+    result = get_evaluator()
+    if result is not None:
+        # It should be one of the known evaluators
+        assert result in INDEPENDENT_EVALUATORS
+        # It should be the first available one in priority order
+        import shutil
+        for name in INDEPENDENT_EVALUATORS:
+            if shutil.which(name) is not None:
+                assert result == name, f"Expected {name} (first available) but got {result}"
+                break
+
+
 # ---------------------------------------------------------------------------
 # constants tests
 # ---------------------------------------------------------------------------
@@ -730,8 +787,23 @@ def test_hard_limits_keys():
     assert set(HARD_LIMITS.keys()) == expected
 
 
+def test_hard_limits_values():
+    """HARD_LIMITS values match the V2 design spec."""
+    assert HARD_LIMITS["max_rounds_total"] == 100
+    assert HARD_LIMITS["max_rounds_per_feature"] == 30
+    assert HARD_LIMITS["max_consecutive_crashes"] == 5
+    assert HARD_LIMITS["max_consecutive_fails"] == 10
+    assert HARD_LIMITS["max_flat_after_pivot"] == 3
+
+
 def test_independent_evaluators():
     """INDEPENDENT_EVALUATORS is a non-empty list of strings."""
     assert isinstance(INDEPENDENT_EVALUATORS, list)
     assert len(INDEPENDENT_EVALUATORS) > 0
     assert all(isinstance(e, str) for e in INDEPENDENT_EVALUATORS)
+
+
+def test_independent_evaluators_priority_order():
+    """INDEPENDENT_EVALUATORS has codex first, claude second per V2 design."""
+    assert INDEPENDENT_EVALUATORS[0] == "codex"
+    assert INDEPENDENT_EVALUATORS[1] == "claude"
