@@ -113,7 +113,7 @@ dimensions:
 
 ## Agent Rules
 - Do not modify program.md
-- Do not modify .claude/skills/evolve/
+- Do not modify files under .claude/skills/evolve/
 - Git commit after each agent run
 - Build output appended to .evolve/run.log
 ```

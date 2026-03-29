@@ -289,7 +289,8 @@ Output report to user, stop the loop.
 ## Agent Rules
 
 1. **Do not modify program.md** -- contract between human and agent
-2. **Do not install new packages** -- unless program.md allows
+2. **Do not modify files under .claude/skills/evolve/** -- evaluation infrastructure is immutable
+3. **Do not install new packages** -- unless program.md allows
 3. **Git commit per B/C run** -- finer rollback granularity
 4. **results.tsv is append-only**
 5. **run.log is append-only** -- with timestamp separators
