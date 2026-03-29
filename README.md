@@ -1,150 +1,150 @@
-[![en](https://img.shields.io/badge/lang-English-blue.svg)](./README.md)
-[![zh-CN](https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-red.svg)](./README-zh_CN.md)
+[![zh-CN](https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-red.svg)](./README.md)
+[![en](https://img.shields.io/badge/lang-English-blue.svg)](./README-en.md)
 
 # Evolve
 
-**Define a goal. AI builds, evaluates, and iterates until it's met.**
+**定义目标，AI 自动构建、评估、迭代，直到达标。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![Tests](https://img.shields.io/badge/tests-50%20passed-brightgreen.svg)]()
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)]()
 
-Autonomous build-evaluate-iterate loop as a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill. Inspired by [Anthropic's harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) and [Karpathy's autoresearch](https://github.com/karpathy/autoresearch).
+一个 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) Skill，让 AI 编程助手变成自治的「构建-评估-迭代」循环。灵感来自 [Anthropic 的 harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) 和 [Karpathy 的 autoresearch](https://github.com/karpathy/autoresearch)。
 
 ```
-You: "Build a REST API with auth and file upload"
-  -> Evolve runs 14 rounds autonomously
-  -> Each feature scored by independent LLM evaluator
-  -> 3 atomic commits on a feature branch, ready to merge
+你: "做一个带认证和文件上传的 REST API"
+  -> Evolve 自动跑 14 轮
+  -> 每个功能由独立 LLM 评估器打分
+  -> 3 个原子 commit 在功能分支上，随时可以 merge
 ```
 
 ---
 
-## When to Use
+## 什么时候用
 
-Evolve is for tasks where **"good enough" isn't good enough** and you want AI to keep iterating until quality thresholds are met.
+当 **「差不多得了」不够好**，你希望 AI 反复打磨直到质量达标时。
 
-| Scenario | What Evolve Does |
-|----------|-----------------|
-| Build a web app from scratch | Implements features one by one, runs tests after each, fixes failures automatically |
-| Tune an AI chatbot | Simulates real users talking to your bot, scores conversation quality, rewrites prompts until scores pass |
-| Create teaching materials | Builds content, evaluates against pedagogical criteria, revises until all dimensions pass |
-| Improve existing code | Refactors feature by feature, evaluates each change, rolls back if quality drops |
+| 场景 | Evolve 做什么 |
+|------|-------------|
+| 从零构建 Web 应用 | 逐个实现功能，每个跑测试，不过就自动修 |
+| 调优 AI 聊天机器人 | 模拟真实用户跟你的 bot 聊天，给对话质量打分，改 prompt 直到分数过线 |
+| 做教学材料 | 写内容 → 按教学标准评估 → 改到所有维度达标 |
+| 改进现有代码 | 逐个功能重构，每次改完评估，质量下降就回滚 |
 
-**Not a good fit for:** one-shot tasks, quick fixes, or anything where you can judge quality faster than an eval loop can.
+**不适合：** 一次性任务、快速修 bug、或者你自己判断比跑评估循环更快的场景。
 
-## Prerequisites
+## 前置条件
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (CLI or IDE extension)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)（CLI 或 IDE 扩展）
 - Python 3.8+
 - Git
 
-> `/evolve` and `/loop` are slash commands you type inside Claude Code's chat input, not shell commands. If you're new to Claude Code skills, see [the skills docs](https://docs.anthropic.com/en/docs/claude-code/skills).
+> `/evolve` 和 `/loop` 是你在 Claude Code 聊天框里输入的斜杠命令，不是 shell 命令。如果你不熟悉 Claude Code skills，看 [skills 文档](https://docs.anthropic.com/en/docs/claude-code/skills)。
 
 ---
 
-## Quick Start
+## 快速开始
 
-### 1. Install
+### 1. 安装
 
 ```bash
 mkdir -p .claude/skills
 git clone https://github.com/jiangleo/evolve .claude/skills/evolve
 ```
 
-### 2. Init (interactive, ~5 min)
+### 2. 初始化（交互式，约 5 分钟）
 
-Type `/evolve` in Claude Code. It walks you through setup:
+在 Claude Code 里输入 `/evolve`，它会引导你完成配置：
 
 ```
-Step 1  Scans your project           (automatic)
-Step 2  Asks what you want           (1-2 questions)
-Step 3  Generates eval criteria      (you confirm)
-Step 4  Generates program.md         (field-by-field)
-Step 5  Validates everything         (automatic)
-Step 6  Asks which LLM evaluates     (1 question)
-Step 7  Generates feature spec       (you review)
+Step 1  扫描项目              （自动）
+Step 2  问你要做什么           （1-2 个问题）
+Step 3  生成评估标准           （你确认）
+Step 4  生成 program.md       （逐字段确认）
+Step 5  校验所有配置           （自动）
+Step 6  选评估器              （1 个问题）
+Step 7  生成功能清单           （你审阅）
 ```
 
-### 3. Run the Loop (autonomous)
+### 3. 启动自动循环（无人值守）
 
 ```
 /loop 1m /evolve
 ```
 
-> `/loop` is a separate skill that runs a command on a recurring interval. No `/loop`? Just type `/evolve` manually each time -- it recovers state from files automatically.
+> `/loop` 是另一个 Claude Code skill，按间隔重复运行斜杠命令。没有 `/loop`？每次手动输入 `/evolve` 也行——会从文件自动恢复状态。
 
-The AI picks up features one by one: build, commit, evaluate, fix if needed, move on.
+AI 会逐个功能处理：构建 → 提交 → 评估 → 不过就修 → 过了就下一个。
 
-You can walk away. Check `.evolve/report.md` when you're back.
+你可以走开。回来看 `.evolve/report.md` 就知道进度。
 
-### 4. Check Progress
+### 4. 查看进度
 
-Type `/evolve` again to see where things stand:
+再次输入 `/evolve` 查看当前状态：
 
 ```
-# Evolve Progress -- Round 12
-  OK  User Auth       -- passed round 3 (7.8)
-  OK  Data Import     -- passed round 5 (8.2)
-  >>  API Rate Limit  -- 2 attempts, last: "missing sliding window"
-  ..  Data Export     -- not started
+# Evolve Progress — 第 12 轮
+  OK  用户认证       — 第 3 轮达标 (7.8)
+  OK  数据导入       — 第 5 轮达标 (8.2)
+  >>  API 限流       — 尝试 2 次，上轮: "缺少滑动窗口实现"
+  ..  数据导出       — 未开始
 ```
 
 ---
 
-## Full Example
+## 完整示例
 
 <details>
-<summary><b>End-to-end session: building a REST API</b></summary>
+<summary><b>端到端演示：从零构建 REST API</b></summary>
 
-**You type:**
+**你输入：**
 ```
 /evolve
 ```
 
-**Evolve scans and asks:**
+**Evolve 扫描项目后问你：**
 ```
-Detected: Node.js + Express project, vitest available.
-What do you want to build?
-```
-
-**You say:**
-```
-A REST API with user auth (JWT), a chat endpoint, and file upload.
+检测到 Node.js + Express 项目，有 vitest。
+你想构建什么？
 ```
 
-**Evolve proposes eval criteria:**
+**你说：**
 ```
-Evaluation dimensions:
-  1. Test Pass Rate -- deterministic (vitest), threshold 7.0
-  2. Code Quality -- llm-judged, threshold 7.0
-  3. API Correctness -- llm-judged, threshold 7.0
-Adjust? (Y/n)
+一个 REST API，要有用户认证（JWT）、聊天接口、文件上传。
 ```
 
-**You confirm and start the loop:**
+**Evolve 生成评估标准让你确认：**
+```
+评估维度：
+  1. 测试通过率 — deterministic (vitest)，门槛 7.0
+  2. 代码质量 — llm-judged，门槛 7.0
+  3. API 正确性 — llm-judged，门槛 7.0
+要调整吗？(Y/n)
+```
+
+**你确认，然后启动循环：**
 ```
 /loop 1m /evolve
 ```
 
-**30 minutes later:**
+**30 分钟后你回来看：**
 ```
-# Evolve Progress -- Round 14
-  OK  JWT Auth        -- passed round 4  (8.1)
-  OK  Chat Endpoint   -- passed round 8  (7.6)
-  >>  File Upload     -- attempt 2, last: "missing size validation"
-```
-
-**1 hour later:**
-```
-# Evolve Progress -- Round 22
-  OK  JWT Auth        -- passed round 4  (8.1)
-  OK  Chat Endpoint   -- passed round 8  (7.6)
-  OK  File Upload     -- passed round 16 (7.8)
-  All features passed. Done.
+# Evolve Progress — 第 14 轮
+  OK  JWT 认证      — 第 4 轮达标 (8.1)
+  OK  聊天接口      — 第 8 轮达标 (7.6)
+  >>  文件上传      — 尝试 2 次，上轮："缺少文件大小校验"
 ```
 
-**You review the result:**
+**1 小时后：**
+```
+# Evolve Progress — 第 22 轮
+  OK  JWT 认证      — 第 4 轮达标 (8.1)
+  OK  聊天接口      — 第 8 轮达标 (7.6)
+  OK  文件上传      — 第 16 轮达标 (7.8)
+  所有功能达标。完成。
+```
+
+**你看结果：**
 ```bash
 git log --oneline evolve/rest-api
 # a1b2c3d feat: JWT auth with refresh tokens
@@ -152,86 +152,86 @@ git log --oneline evolve/rest-api
 # c3d4e5f feat: file upload with size + type validation
 ```
 
-Three atomic commits on a feature branch, ready to merge.
+三个原子 commit 在功能分支上，随时可以 merge。
 
 </details>
 
 ---
 
-## Key Concepts
+## 核心概念
 
-**Builder != Evaluator** -- The AI that writes the code is not the same one that judges it. During Init, you pick an independent evaluator (Codex, a separate Claude instance, etc.).
+**构建者 ≠ 评估者** — 写代码的 AI 和打分的 AI 不是同一个。Init 时你选一个独立评估器（Codex、单独的 Claude 实例等），避免自我评分注水。
 
-**Everything is a File** -- All state lives in `.evolve/`. No database, no server. Delete it for a clean slate. Edit `spec.md` mid-run and the next loop picks it up.
+**一切都是文件** — 所有状态存在 `.evolve/` 里。没有数据库，没有服务器。删掉就是从头开始。想中途改需求？编辑 `spec.md`，下一轮自动读取。
 
-| File | What It Does | Who Writes It |
-|------|-------------|---------------|
-| `program.md` | Your goals + constraints | You (during Init) |
-| `eval.yml` | Evaluation dimensions + thresholds | Init (you confirm) |
-| `adapter.py` | How to set up/test your project | Init (auto-generated) |
-| `spec.md` | Feature list + acceptance criteria | Planner |
-| `results.tsv` | Full iteration history | Build + Eval (append-only) |
-| `evaluation.md` | Latest scores + fix priorities | Evaluator |
-| `report.md` | Human-readable progress | Generated each round |
+| 文件 | 作用 | 谁写的 |
+|------|------|--------|
+| `program.md` | 你的目标和约束 | 你（Init 时） |
+| `eval.yml` | 评估维度和阈值 | Init 自动生成（你确认） |
+| `adapter.py` | 怎么启动/测试你的项目 | Init 自动生成 |
+| `spec.md` | 功能列表 + 验收标准 | Planner |
+| `results.tsv` | 完整迭代记录 | Build + Eval（只追加） |
+| `evaluation.md` | 最新评分 + 修复优先级 | 评估器 |
+| `report.md` | 人类可读的进度报告 | 每轮自动生成 |
 
-**Adapters** -- Each project gets a custom `adapter.py` generated during Init. Three reference implementations ship with the skill:
+**Adapter** — 每个项目在 Init 时自动生成专属的 `adapter.py`。Skill 自带三个参考实现：
 
-| Adapter | For | Scoring |
-|---------|-----|---------|
-| `web_app.py` | Web apps (FastAPI, Flask, Node) | Test pass rate + LLM review |
-| `teaching.py` | Educational content | All LLM-judged |
-| `chat_agent.py` | Chat agents ([OpenClaw](https://github.com/nicepkg/openclaw)) | Simulated conversations + LLM-judged |
-
----
-
-## Important Notes
-
-<details>
-<summary><b>Before you start</b></summary>
-
-- **Commit your work first.** Evolve creates a `evolve/<tag>` branch. Your main branch is untouched, but uncommitted changes could get messy.
-- **Have tests if possible.** Deterministic scoring from real tests is far more reliable than LLM-only evaluation.
-- **Pick the right evaluator.** Using the same Claude instance that builds the code to also judge it defeats the purpose.
-
-</details>
-
-<details>
-<summary><b>During a run</b></summary>
-
-- **Don't delete `.evolve/` mid-run.** It's the loop's entire memory.
-- **You can edit `spec.md` mid-run.** The next iteration picks up changes.
-- **Don't edit `program.md` unless you know what you're doing.** It's the contract between you and the AI.
-- **100-iteration hard cap.** Prevents runaway costs.
-- **Check `run.log` if things look stuck.** Build output goes there, not into the agent's context.
-
-</details>
-
-<details>
-<summary><b>After it's done</b></summary>
-
-- **Review the git log.** Every feature is one commit on `evolve/<tag>`. Cherry-pick or merge as you see fit.
-- **Read `report.md`.** Shows which features passed, which were skipped, and why.
-- **Delete `.evolve/` when satisfied.** It's gitignored and not meant to be permanent.
-
-</details>
+| Adapter | 适用 | 打分方式 |
+|---------|------|---------|
+| `web_app.py` | Web 应用（FastAPI、Flask、Node） | 测试通过率 + LLM 评审 |
+| `teaching.py` | 教学内容 | 全 LLM 打分 |
+| `chat_agent.py` | 对话 AI agent（[OpenClaw](https://github.com/nicepkg/openclaw)） | 模拟对话 + LLM 打分 |
 
 ---
 
-## Design Choices
+## 注意事项
 
-| Decision | Reason |
-|----------|--------|
-| Claude Code skill, not standalone tool | Runs inside Claude Code's permission system -- no reimplementation needed |
-| File-based state, not database | Inspectable, editable, diff-able. No setup, no migration |
-| One commit per feature | Atomic git history. Revert one without touching others |
-| 2-min lock timeout | Prevents collisions from `/loop` without blocking on crashes |
+<details>
+<summary><b>开始前</b></summary>
 
-## Running Tests
+- **先 commit 你的代码。** Evolve 会创建 `evolve/<tag>` 分支。你的主分支不受影响，但未提交的改动可能会乱。
+- **有测试最好。** 有真实测试的确定性打分靠谱得多。
+- **选对评估器。** 用同一个写代码的 Claude 来打分，等于自己给自己批作业。
+
+</details>
+
+<details>
+<summary><b>运行中</b></summary>
+
+- **别删 `.evolve/`。** 它是循环的全部记忆。
+- **可以改 `spec.md`。** 加功能、删功能、调顺序都行，下一轮自动读取。
+- **别随便改 `program.md`。** 它是你和 AI 的合约。
+- **100 轮硬上限。** 自动停止，防止跑飞。
+- **卡住了看 `run.log`。** 构建输出都在那里。
+
+</details>
+
+<details>
+<summary><b>完成后</b></summary>
+
+- **看 git log。** 每个功能一个 commit，在 `evolve/<tag>` 分支上。
+- **看 `report.md`。** 哪些通过了、哪些跳过了、为什么。
+- **满意了就删 `.evolve/`。** 默认已 gitignore，不是设计来长期保留的。
+
+</details>
+
+---
+
+## 设计选择
+
+| 决策 | 原因 |
+|------|------|
+| Claude Code skill，不是独立工具 | 跑在 Claude Code 权限系统里，不用自己实现文件/git/命令访问 |
+| 文件存状态，不用数据库 | 可以看、可以改、可以 diff。不用安装，不用迁移 |
+| 每个功能一个 commit | 原子 git 历史，回滚一个不影响其他 |
+| 锁超时 2 分钟 | 足够避免撞车，又短到崩溃不阻塞下一轮 `/loop` |
+
+## 运行测试
 
 ```bash
-python -m pytest tests/ -v    # 50 tests, ~0.1s
+python -m pytest tests/ -v    # 50 个测试，约 0.1 秒
 ```
 
-## License
+## 许可证
 
 MIT
