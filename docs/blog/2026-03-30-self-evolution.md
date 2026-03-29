@@ -39,31 +39,35 @@ Feature 6: README        ← 文档，最后改
 ## 18 轮运行记录
 
 ```
-Round  Phase  Feature           Score   Status  发生了什么
-─────  ─────  ────────────────  ──────  ──────  ────────────────────────────────
- 1     build  prepare.py        -       keep    加了 6 个新函数 + 2 个常量
- 2     eval   prepare.py        8.9     pass    codex 评 9/10，一次过
- 3     build  tests             -       keep    46 个新测试全过
- 4     eval   tests             8.0     FAIL    codex 评 6/10：缺 should_stop 的完整覆盖
- 5     build  tests             -       keep    补了 5 个测试，51 个全过
- 6     eval   tests             8.5     pass    codex 评 7/10，刚好过线
- 7     build  agent definitions -       keep    创建 O/B/C 三个 agent 定义文件
- 8     eval   agent definitions 9.5     pass    codex 评 9/10，一次过
- 9     build  loop.md           -       keep    重写状态机、should_stop 门控、B/C 派发
-10     eval   loop.md           8.0     FAIL    codex 评 6/10：init/plan 残留 + Human 列
-11     build  loop.md           -       keep    清理 init/plan 残留，权限矩阵改纯 O/B/C
-12     build  loop.md           -       keep    继续清理 plan/keep 引用，加路由表
-13     eval   loop.md           9.0     pass    codex 评 8/10，第三轮才过
-14     build  SKILL.md          -       keep    重写为 4 步 Init + brainstorming
-15     eval   SKILL.md          9.0     pass    codex 评 8/10，一次过
-16     build  README            -       keep    两份 README 更新为 V2 架构
-17     eval   README            10.0    pass    codex 评 10/10，完美
-18     done   -                 -       -       6/6 features passed
+Round  Time   Phase  Feature           Score   Status  发生了什么
+─────  ─────  ─────  ────────────────  ──────  ──────  ────────────────────────────────
+ 1     01:12  build  prepare.py        -       keep    加了 6 个新函数 + 2 个常量
+ 2     01:14  eval   prepare.py        8.9     pass    codex 评 9/10，一次过
+ 3     01:19  build  tests             -       keep    46 个新测试全过
+ 4     01:20  eval   tests             8.0     FAIL    codex 评 6/10：缺 should_stop 的完整覆盖
+ 5     01:23  build  tests             -       keep    补了 5 个测试，51 个全过
+ 6     01:25  eval   tests             8.5     pass    codex 评 7/10，刚好过线
+ 7     01:28  build  agent definitions -       keep    创建 O/B/C 三个 agent 定义文件
+ 8     01:30  eval   agent definitions 9.5     pass    codex 评 9/10，一次过
+ 9     01:33  build  loop.md           -       keep    重写状态机、should_stop 门控、B/C 派发
+10     01:35  eval   loop.md           8.0     FAIL    codex 评 6/10：init/plan 残留 + Human 列
+11     01:38  build  loop.md           -       keep    清理 init/plan 残留，权限矩阵改纯 O/B/C
+12     01:42  build  loop.md           -       keep    继续清理 plan/keep 引用，加路由表
+13     01:44  eval   loop.md           9.0     pass    codex 评 8/10，第三轮才过
+14     01:47  build  SKILL.md          -       keep    重写为 4 步 Init + brainstorming
+15     01:49  eval   SKILL.md          9.0     pass    codex 评 8/10，一次过
+16     01:52  build  README            -       keep    两份 README 更新为 V2 架构
+17     01:54  eval   README            10.0    pass    codex 评 10/10，完美
+18     01:55  done   -                 -       -       6/6 features passed
 ```
+
+> 时间为 2026-03-30 北京时间，从 git commit 时间戳提取。
 
 ### 关键数据
 
-- **总轮次**：18（12 轮 build + 6 轮 eval pass + 2 轮 eval fail + 0 轮空跑 = 18 轮有效执行）
+- **总耗时**：40 分钟（01:12 → 01:52，从第一个 commit 到最后一个 commit）
+- **平均每轮**：~2.5 分钟（含 build/eval + codex 调用 + /loop 1m 等待）
+- **总轮次**：18（12 轮 build + 6 轮 eval pass + 2 轮 eval fail = 18 轮有效执行）
 - **一次过的 feature**：4/6（prepare.py, agent definitions, SKILL.md, README）
 - **需要修的 feature**：2/6（tests 修了 1 轮，loop.md 修了 2 轮）
 - **修复原因**：全部是 codex 指出的设计合规问题，不是代码 bug
@@ -118,7 +122,7 @@ loop.md 耗时最长，因为它描述的是系统自身的运行逻辑。改自
 
 ## 结论
 
-18 轮，30 分钟，一个 AI 系统用自己的 V1 版本把自己重写成了 V2。
+18 轮，40 分钟（01:12 → 01:52），一个 AI 系统用自己的 V1 版本把自己重写成了 V2。
 
 这不是 AGI。这是一个设计良好的 harness + 一个足够聪明的模型 + 一个愿意按 "Danger Mode" 的人类。
 
