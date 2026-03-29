@@ -9,7 +9,7 @@
 [![Tests](https://img.shields.io/badge/tests-50%20passed-brightgreen.svg)]()
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)]()
 
-一个 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) Skill，让 AI 编程助手变成自治的「构建-评估-迭代」循环。灵感来自 [Anthropic 的 harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) 和 [Karpathy 的 autoresearch](https://github.com/karpathy/autoresearch)。
+一个 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) Skill。你定义想要什么和怎么算好，AI 自己写代码、自己打分、不及格自己改，直到过线。灵感来自 [Anthropic 的 harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) 和 [Karpathy 的 autoresearch](https://github.com/karpathy/autoresearch)。
 
 ```
 你: "做一个带认证和文件上传的 REST API"
@@ -22,7 +22,7 @@
 
 ## 什么时候用
 
-当 **「差不多得了」不够好**，你希望 AI 反复打磨直到质量达标时。
+你有明确的质量标准，但手动一轮轮改太慢。让 AI 替你跑这个循环。
 
 | 场景 | Evolve 做什么 |
 |------|-------------|
@@ -160,9 +160,9 @@ git log --oneline evolve/rest-api
 
 ## 核心概念
 
-**构建者 ≠ 评估者** — 写代码的 AI 和打分的 AI 不是同一个。Init 时你选一个独立评估器（Codex、单独的 Claude 实例等），避免自我评分注水。
+**构建者 ≠ 评估者** — 写代码的 AI 和打分的 AI 不是同一个。Init 时你选一个独立评估器（Codex、单独的 Claude 实例等）。自己写自己评，分数��可信。
 
-**一切都是文件** — 所有状态存在 `.evolve/` 里。没有数据库，没有服务器。删掉就是从头开始。想中途改需求？编辑 `spec.md`，下一轮自动读取。
+**一切都是文件** — 状态全在 `.evolve/` 里，没有数据库，没有服务。删掉这个目录就回到原点。中途想改需求，直接编辑 `spec.md`，下一轮自动生效。
 
 | 文件 | 作用 | 谁写的 |
 |------|------|--------|
@@ -174,7 +174,7 @@ git log --oneline evolve/rest-api
 | `evaluation.md` | 最新评分 + 修复优先级 | 评估器 |
 | `report.md` | 人类可读的进度报告 | 每轮自动生成 |
 
-**Adapter** — 每个项目在 Init 时自动生成专属的 `adapter.py`。Skill 自带三个参考实现：
+**Adapter** — Init 时根据你的项目自动生成 `adapter.py`，告诉 Evolve 怎么跑你的项目。仓库里附了三个参考：
 
 | Adapter | 适用 | 打分方式 |
 |---------|------|---------|
@@ -221,10 +221,10 @@ git log --oneline evolve/rest-api
 
 | 决策 | 原因 |
 |------|------|
-| Claude Code skill，不是独立工具 | 跑在 Claude Code 权限系统里，不用自己实现文件/git/命令访问 |
-| 文件存状态，不用数据库 | 可以看、可以改、可以 diff。不用安装，不用迁移 |
-| 每个功能一个 commit | 原子 git 历史，回滚一个不影响其他 |
-| 锁超时 2 分钟 | 足够避免撞车，又短到崩溃不阻塞下一轮 `/loop` |
+| 做成 Claude Code skill | 直接复用 Claude Code 的文件、git、命令权限，不用自己造轮子 |
+| 用文件存状态 | 能看、能改、能 diff，不需要装数据库 |
+| 一个功能一个 commit | 方便单独回滚 |
+| 锁 2 分钟过期 | 防撞车，崩了也不卡下一轮 |
 
 ## 运行测试
 

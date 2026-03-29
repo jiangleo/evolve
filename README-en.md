@@ -9,7 +9,7 @@
 [![Tests](https://img.shields.io/badge/tests-50%20passed-brightgreen.svg)]()
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)]()
 
-Autonomous build-evaluate-iterate loop as a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill. Inspired by [Anthropic's harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) and [Karpathy's autoresearch](https://github.com/karpathy/autoresearch).
+A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill. You define what you want and what "good" looks like. AI writes the code, scores it, and fixes what doesn't pass -- on repeat, until everything does. Inspired by [Anthropic's harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) and [Karpathy's autoresearch](https://github.com/karpathy/autoresearch).
 
 ```
 You: "Build a REST API with auth and file upload"
@@ -22,7 +22,7 @@ You: "Build a REST API with auth and file upload"
 
 ## When to Use
 
-Evolve is for tasks where **"good enough" isn't good enough** and you want AI to keep iterating until quality thresholds are met.
+You have a clear quality bar, but manually iterating is slow. Let AI run that loop for you.
 
 | Scenario | What Evolve Does |
 |----------|-----------------|
@@ -160,9 +160,9 @@ Three atomic commits on a feature branch, ready to merge.
 
 ## Key Concepts
 
-**Builder != Evaluator** -- The AI that writes the code is not the same one that judges it. During Init, you pick an independent evaluator (Codex, a separate Claude instance, etc.).
+**Builder != Evaluator** -- The AI that writes the code is not the same one that judges it. You pick a separate evaluator during Init (Codex, another Claude instance, etc.). If the same AI builds and grades, the scores are meaningless.
 
-**Everything is a File** -- All state lives in `.evolve/`. No database, no server. Delete it for a clean slate. Edit `spec.md` mid-run and the next loop picks it up.
+**Everything is a File** -- State is in `.evolve/`, nothing else. No database, no server. Delete the directory to start over. Edit `spec.md` mid-run and the next loop picks it up.
 
 | File | What It Does | Who Writes It |
 |------|-------------|---------------|
@@ -174,7 +174,7 @@ Three atomic commits on a feature branch, ready to merge.
 | `evaluation.md` | Latest scores + fix priorities | Evaluator |
 | `report.md` | Human-readable progress | Generated each round |
 
-**Adapters** -- Each project gets a custom `adapter.py` generated during Init. Three reference implementations ship with the skill:
+**Adapters** -- Init generates a custom `adapter.py` for your project, telling Evolve how to run it. Three references are included:
 
 | Adapter | For | Scoring |
 |---------|-----|---------|
@@ -221,10 +221,10 @@ Three atomic commits on a feature branch, ready to merge.
 
 | Decision | Reason |
 |----------|--------|
-| Claude Code skill, not standalone tool | Runs inside Claude Code's permission system -- no reimplementation needed |
-| File-based state, not database | Inspectable, editable, diff-able. No setup, no migration |
-| One commit per feature | Atomic git history. Revert one without touching others |
-| 2-min lock timeout | Prevents collisions from `/loop` without blocking on crashes |
+| It's a Claude Code skill | Reuses Claude Code's file, git, and command permissions directly |
+| State is files | You can read, edit, and diff everything. No database to set up |
+| One commit per feature | Easy to revert one without touching others |
+| Lock expires in 2 min | Prevents collisions, doesn't block after a crash |
 
 ## Running Tests
 
