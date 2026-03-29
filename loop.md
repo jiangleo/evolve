@@ -1,4 +1,4 @@
-# Evolve Loop: Build -> Eval Autonomous Cycle
+# Evolve Loop V2: O → B → C → B → C → ... → Done
 
 This file is loaded after Init (SKILL.md) completes. The Agent reads this file during the autonomous loop.
 
@@ -27,6 +27,28 @@ Call `update_lock(".evolve", phase, feature)` at every major step.
 Call `release_lock(".evolve")` when done.
 Lock auto-expires after 2 minutes if session crashes.
 
+### 1. should_stop() Gate
+
+**Before any AI work**, check code-enforced stop conditions:
+
+```python
+from prepare import read_progress, should_stop
+
+progress = read_progress(".evolve/results.tsv")
+feature = progress.get("current_feature") or "<first unfinished>"
+
+stop, reason = should_stop(".evolve/results.tsv", feature)
+if stop:
+    print(f"⛔ {feature} stopped by code after {progress['total_iterations']} rounds")
+    print(f"   Reason: {reason}")
+    print(f"   Action needed: adjust program.md / lower threshold / provide hints")
+    print(f"   Re-run /evolve to continue.")
+    release_lock(".evolve")
+    -> stop immediately
+```
+
+AI does not participate in this decision.
+
 ---
 
 ## Per-Round Reading List
@@ -35,11 +57,11 @@ New session -- before making any decisions, **read in order**:
 
 | # | File | How | Purpose |
 |---|------|-----|---------|
-| 1 | `.evolve/program.md` | Full text | User strategy and constraints |
+| 1 | `.evolve/program.md` | Full text | User goals, constraints, V2 design reference |
 | 2 | `.evolve/spec.md` | Full text | Feature list and acceptance criteria |
 | 3 | `.evolve/eval.yml` | Full text | Evaluation dimensions and thresholds |
 | 4 | `.evolve/results.tsv` | Last 10 lines | Current progress |
-| 5 | `.evolve/evaluation.md` | Full text (if exists) | Previous eval feedback |
+| 5 | `.evolve/strategy.md` | Full text (if exists) | C's previous strategic decisions |
 | 6 | git log --oneline -3 | Command | What changed recently |
 
 ```python
@@ -52,24 +74,32 @@ adapter = load_adapter(".evolve/adapter.py")
 
 ---
 
-## State Machine Routing
+## State Machine (V2)
+
+```
+build/keep       → dispatch C (evaluate the build)
+build/crash      → dispatch B (fix)
+eval/pass        → dispatch B (next feature; C resets strategy.md)
+eval/fail        → dispatch B (C already updated strategy.md with decision)
+All features pass → Done
+```
+
+No contract phase. No skip status. Stuck = code stops the loop via should_stop().
+
+### Routing
 
 ```python
 if progress["phase"] == "init":
     -> Init not complete, prompt to run /evolve
 
-elif progress["total_iterations"] >= 100:
-    -> Done Flow (global cap)
-
 elif progress["phase"] == "build":
-    # Check if all features are completed/skipped
+    # Check if all features completed
     # Read spec.md to extract spec_features
-    # done = set(progress["completed_features"] + progress["skipped_features"])
-    # if set(spec_features) <= done -> Done Flow
+    # if all spec_features in progress["completed_features"] -> Done Flow
     -> Build Flow
 
 elif progress["phase"] == "eval":
-    -> Eval Flow
+    -> Eval Flow (dispatch C)
 ```
 
 ### Last Row Mapping
@@ -77,46 +107,45 @@ elif progress["phase"] == "eval":
 ```
 No data rows              -> Init not complete
 plan/keep                 -> Build (pick first feature from spec)
-build/keep                -> Eval (current feature done, review it)
-build/crash               -> Build (read run.log to fix; 3+ consecutive crashes -> skip)
-contract/pass             -> Build (start coding)
-contract/fail             -> Build (rewrite contract)
+build/keep                -> Eval (dispatch C to evaluate)
+build/crash               -> Build (fix the crash)
 eval/pass                 -> Build (next unfinished feature)
-eval/fail                 -> Build (read evaluation.md to fix; 3+ consecutive fails -> reset)
-eval/skip                 -> Build (next unfinished feature)
-All features pass/skip    -> Done
-Global iterations >= 100  -> Done
+eval/fail                 -> Build (read strategy.md, C already wrote next action)
+All features pass         -> Done
 ```
 
 ---
 
-## Build Flow
+## Build Flow (B Agent)
+
+O dispatches B subagent. B reads program.md + strategy.md.
 
 ### Feature Selection
 
-Read `.evolve/spec.md`, find the first feature not in `progress["completed_features"]` and not in `progress["skipped_features"]`, in order.
+Read `.evolve/spec.md`, find the first feature not in `progress["completed_features"]`, in order.
 
-### New Feature Flow
+### New Feature (after plan/keep or eval/pass)
 
-1. Write Sprint Contract (`.evolve/sprint_contract.md`)
-2. Quick review of contract
-3. Record `contract/pass` or `contract/fail`
-4. Start coding
+B starts fresh on the next feature. No sprint contract needed (V2 removed contracts).
 
 ### Fix Round (after eval/fail)
 
-1. Read `.evolve/evaluation.md` fix priorities
-2. Fix by priority
-3. Code directly (reuse existing contract)
+B reads `.evolve/strategy.md` which C already updated with the strategic decision:
+- Continue → keep current approach, fix specific issues
+- Pivot → new technical approach described in strategy.md
+- Rollback → revert to specified commit, restart
+- Re-execute → redo following strategy.md more closely
+- Decompose → only implement first sub-task from strategy.md
+- Consolidate → clean up dead code / stale comments / contradictions (no new features)
 
 ### Coding Rules
 
 **Output Isolation:**
 
 ```bash
-# Redirect all build/test commands to run.log
-npm run build > .evolve/run.log 2>&1
-python -m pytest > .evolve/run.log 2>&1
+# Redirect all build/test commands to run.log (append, not overwrite)
+npm run build >> .evolve/run.log 2>&1
+python -m pytest >> .evolve/run.log 2>&1
 ```
 
 - On crash: `tail -n 50 .evolve/run.log` to diagnose
@@ -124,8 +153,8 @@ python -m pytest > .evolve/run.log 2>&1
 
 **Coding Flow:**
 
-1. Implement feature
-2. `git add` + `git commit` (one commit per feature)
+1. Implement feature / fix
+2. `git add` + `git commit` (one commit per B run — finer rollback granularity)
 3. Append to results.tsv
 
 **Simplicity Principle:**
@@ -155,26 +184,11 @@ append_result(".evolve/results.tsv", {
 })
 ```
 
-### Failure Handling
-
-```
-consecutive_crashes >= 3
-  -> skip, move to next feature
-
-consecutive_fails <= 3
-  -> read evaluation.md to fix -> re-Build
-
-consecutive_fails > 3 and not has_been_reset
-  -> git reset --hard <base_commit>
-  -> record reset, allow 1 retry
-
-consecutive_fails > 3 and has_been_reset
-  -> skip (already retried and still failing)
-```
-
 ---
 
-## Eval Flow
+## Eval Flow (C Agent)
+
+O dispatches C subagent. C evaluates the build and makes strategic decisions.
 
 ### Environment Setup
 
@@ -190,18 +204,22 @@ if env["status"] == "crash":
 ```python
 check_result = adapter.run_checks(project_dir, feature)
 deterministic_scores = check_result["scores"]
-# e.g. {"Test Pass Rate": 9.2}
 ```
 
-### LLM Evaluation
+### Independent Evaluator (MANDATORY)
 
-Read `.evolve/program.md` evaluation method:
-- **Codex**: invoke via codex CLI
-- **Claude**: spawn independent Agent
-- **Other**: per program.md configuration
+C must call an independent evaluator. Enforced by prepare.py:
 
-Eval prompt is dynamically generated based on eval.yml dimensions. Only evaluates `type: llm-judged` dimensions.
+```python
+from prepare import get_evaluator, validate_eval_result
 
+evaluator = get_evaluator()  # returns "codex", "claude", or None
+if evaluator is None:
+    # Cannot proceed without independent evaluator
+    -> stop loop, report to user
+```
+
+Invoke the evaluator CLI to score `type: llm-judged` dimensions.
 Eval output written to `.evolve/eval_codex.md` (or `.evolve/eval_claude.md`).
 
 ### Score Aggregation
@@ -215,17 +233,25 @@ for dim in dimensions:
     else:
         final_scores[name] = llm_scores.get(name, 0)
 
-# Judgment: any dimension below threshold -> fail
+# Any dimension below threshold -> fail
 status = "pass"
 for dim in dimensions:
     if final_scores.get(dim["name"], 0) < dim["threshold"]:
         status = "fail"
 ```
 
-Write summary to `.evolve/evaluation.md`, including:
-- Scores and thresholds per dimension
-- PASS/FAIL conclusion
-- Fix priorities (red/yellow/green)
+### Trajectory Analysis + Strategic Decision
+
+```python
+from prepare import analyze_trajectory
+
+trajectory = analyze_trajectory(".evolve/results.tsv", feature)
+# Returns: {"trend": "rising"|"flat"|"falling"|"insufficient", ...}
+```
+
+C reads trajectory + strategy.md + eval results, then picks one action from the 6-option menu (see agents/critic.md).
+
+Writes updated `.evolve/strategy.md`.
 
 ### Record Result
 
@@ -255,7 +281,7 @@ Path(".evolve/report.md").write_text(report)
 
 ## Done Flow
 
-All features pass/skip, or 100 iterations reached:
+All features pass, or should_stop() halts the loop:
 
 ```python
 report = generate_report(".evolve/results.tsv")
@@ -269,26 +295,24 @@ Output report to user, stop the loop.
 ## Agent Rules
 
 1. **Do not modify program.md** -- contract between human and agent
-2. **Do not modify files under .claude/skills/evolve/** -- evaluation infrastructure is immutable
-3. **Do not install new packages** -- unless program.md allows
-4. **One commit per feature**
-5. **results.tsv is append-only**
-6. **Redirect output to .evolve/run.log**
-7. **Simplicity first** -- when equally effective, choose simpler implementation
-8. **Never stop** -- until all features pass/skip or human interrupts. Do not ask "should I continue?"
-9. **Can spawn subagents** -- via Agent tool for parallel independent subtasks (limited to different files)
+2. **Do not install new packages** -- unless program.md allows
+3. **Git commit per B/C run** -- finer rollback granularity
+4. **results.tsv is append-only**
+5. **run.log is append-only** -- with timestamp separators
+6. **Simplicity first** -- when equally effective, choose simpler implementation
+7. **Never stop** -- until all features pass or should_stop() halts. Do not ask "should I continue?"
+8. **Can spawn subagents** -- via Agent tool for parallel independent subtasks
 
 ---
 
-## File Permission Matrix
+## File Permission Matrix (V2)
 
-| File | Human | Planner | Generator | Evaluator |
-|------|-------|---------|-----------|-----------|
+| File | Human | O | B | C |
+|------|-------|---|---|---|
 | program.md | read/write | read-only | read-only | read-only |
 | eval.yml | read/write | read-only | read-only | read-only |
 | adapter.py | read/write | read-only | read-only | read-only |
-| spec.md | read | write | read-only | read-only |
-| results.tsv | read | append | append | append |
-| evaluation.md | read | - | read | write |
-| run.log | read | - | write | write |
+| strategy.md | read | - | read-only | read/write |
+| results.tsv | read | read | append | append |
+| run.log | read | append | append | append |
 | Project code | read/write | - | read/write | read-only |
