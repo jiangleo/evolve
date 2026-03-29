@@ -1,0 +1,504 @@
+import json, os, tempfile, time, pytest
+from pathlib import Path
+
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from prepare import (append_result, read_progress, HEADER_FIELDS,
+                     generate_report, acquire_lock, update_lock, release_lock,
+                     load_eval_config, load_adapter)
+
+def test_append_result_creates_header():
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as f:
+        path = f.name
+    try:
+        append_result(path, {
+            "commit": "a1b2c3d", "phase": "plan", "feature": "-",
+            "scores": "-", "total": "-", "status": "keep",
+            "summary": "initial spec"
+        })
+        lines = Path(path).read_text().strip().split('\n')
+        assert len(lines) == 2
+        assert lines[0] == '\t'.join(HEADER_FIELDS)
+        assert "a1b2c3d" in lines[1]
+    finally:
+        os.unlink(path)
+
+def test_append_result_preserves_existing():
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as f:
+        f.write('\t'.join(HEADER_FIELDS) + '\n')
+        f.write('a1b2c3d\tplan\t-\t-\t-\tkeep\tinitial\n')
+        path = f.name
+    try:
+        append_result(path, {
+            "commit": "b2c3d4e", "phase": "build", "feature": "auth",
+            "scores": "-", "total": "-", "status": "keep",
+            "summary": "JWT auth"
+        })
+        lines = Path(path).read_text().strip().split('\n')
+        assert len(lines) == 3
+    finally:
+        os.unlink(path)
+
+def test_append_crash_row():
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as f:
+        f.write('\t'.join(HEADER_FIELDS) + '\n')
+        path = f.name
+    try:
+        append_result(path, {
+            "commit": "d4e5f6g", "phase": "build", "feature": "chat",
+            "scores": "0/0/0/0/0", "total": "0", "status": "crash",
+            "summary": "websocket OOM"
+        })
+        lines = Path(path).read_text().strip().split('\n')
+        assert "0/0/0/0/0" in lines[1]
+    finally:
+        os.unlink(path)
+
+
+def _make_tsv(rows):
+    """Helper: create a temp TSV with header + rows."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as f:
+        f.write('\t'.join(HEADER_FIELDS) + '\n')
+        for row in rows:
+            f.write('\t'.join(str(row.get(h, '-')) for h in HEADER_FIELDS) + '\n')
+        return f.name
+
+def test_read_progress_empty():
+    path = _make_tsv([])
+    try:
+        p = read_progress(path)
+        assert p["phase"] == "init"
+        assert p["total_iterations"] == 0
+    finally:
+        os.unlink(path)
+
+def test_read_progress_after_plan():
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"}
+    ])
+    try:
+        p = read_progress(path)
+        assert p["phase"] == "build"
+        assert p["current_feature"] is None
+    finally:
+        os.unlink(path)
+
+def test_read_progress_after_build_keep():
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"},
+        {"commit": "b2c", "phase": "build", "feature": "auth", "scores": "-",
+         "total": "-", "status": "keep", "summary": "JWT auth"}
+    ])
+    try:
+        p = read_progress(path)
+        assert p["phase"] == "eval"
+        assert p["current_feature"] == "auth"
+    finally:
+        os.unlink(path)
+
+def test_read_progress_consecutive_fails():
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"},
+        {"commit": "b2c", "phase": "build", "feature": "auth", "scores": "-",
+         "total": "-", "status": "keep", "summary": "build auth"},
+        {"commit": "c3d", "phase": "eval", "feature": "auth", "scores": "5/8/6/4/7",
+         "total": "6", "status": "fail", "summary": "E2E fail"},
+        {"commit": "d4e", "phase": "build", "feature": "auth", "scores": "-",
+         "total": "-", "status": "keep", "summary": "fix"},
+        {"commit": "e5f", "phase": "eval", "feature": "auth", "scores": "5/8/6/4/7",
+         "total": "6", "status": "fail", "summary": "still fail"},
+    ])
+    try:
+        p = read_progress(path)
+        assert p["phase"] == "build"
+        assert p["consecutive_fails"] == 2
+        assert p["current_feature"] == "auth"
+    finally:
+        os.unlink(path)
+
+def test_read_progress_eval_pass_moves_to_next():
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"},
+        {"commit": "b2c", "phase": "build", "feature": "auth", "scores": "-",
+         "total": "-", "status": "keep", "summary": "build"},
+        {"commit": "c3d", "phase": "eval", "feature": "auth", "scores": "8/9/8/8/7",
+         "total": "8", "status": "pass", "summary": "all pass"},
+    ])
+    try:
+        p = read_progress(path)
+        assert p["phase"] == "build"
+        assert p["completed_features"] == ["auth"]
+        assert p["last_pass_commit"] == "c3d"
+    finally:
+        os.unlink(path)
+
+def test_read_progress_all_done():
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"},
+        {"commit": "b2c", "phase": "build", "feature": "auth", "scores": "-",
+         "total": "-", "status": "keep", "summary": "build"},
+        {"commit": "c3d", "phase": "eval", "feature": "auth", "scores": "8/9/8/8/7",
+         "total": "8", "status": "pass", "summary": "pass"},
+        {"commit": "d4e", "phase": "eval", "feature": "chat", "scores": "-",
+         "total": "-", "status": "skip", "summary": "blocked"},
+    ])
+    try:
+        p = read_progress(path)
+        assert p["phase"] == "build"
+        assert p["completed_features"] == ["auth"]
+        assert p["skipped_features"] == ["chat"]
+    finally:
+        os.unlink(path)
+
+def test_read_progress_consecutive_crashes():
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"},
+        {"commit": "b2c", "phase": "build", "feature": "chat", "scores": "-",
+         "total": "-", "status": "crash", "summary": "OOM"},
+        {"commit": "c3d", "phase": "build", "feature": "chat", "scores": "-",
+         "total": "-", "status": "crash", "summary": "OOM again"},
+        {"commit": "d4e", "phase": "build", "feature": "chat", "scores": "-",
+         "total": "-", "status": "crash", "summary": "OOM third"},
+    ])
+    try:
+        p = read_progress(path)
+        assert p["phase"] == "build"
+        assert p["consecutive_crashes"] == 3
+        assert p["current_feature"] == "chat"
+    finally:
+        os.unlink(path)
+
+def test_read_progress_has_been_reset():
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"},
+        {"commit": "b2c", "phase": "build", "feature": "auth", "scores": "-",
+         "total": "-", "status": "keep", "summary": "build"},
+        {"commit": "c3d", "phase": "eval", "feature": "auth", "scores": "3/4/3/3/3",
+         "total": "3.2", "status": "fail", "summary": "fail 1"},
+        {"commit": "d4e", "phase": "build", "feature": "auth", "scores": "-",
+         "total": "-", "status": "reset", "summary": "reset to base"},
+        {"commit": "e5f", "phase": "build", "feature": "auth", "scores": "-",
+         "total": "-", "status": "keep", "summary": "retry"},
+        {"commit": "f6g", "phase": "eval", "feature": "auth", "scores": "3/4/3/3/3",
+         "total": "3.2", "status": "fail", "summary": "fail after reset"},
+    ])
+    try:
+        p = read_progress(path)
+        assert p["has_been_reset"] is True
+        assert p["consecutive_fails"] == 2
+    finally:
+        os.unlink(path)
+
+def test_read_progress_no_reset():
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"},
+        {"commit": "b2c", "phase": "build", "feature": "auth", "scores": "-",
+         "total": "-", "status": "keep", "summary": "build"},
+        {"commit": "c3d", "phase": "eval", "feature": "auth", "scores": "5/6/5/5/5",
+         "total": "5.2", "status": "fail", "summary": "fail"},
+    ])
+    try:
+        p = read_progress(path)
+        assert p["has_been_reset"] is False
+    finally:
+        os.unlink(path)
+
+def test_read_progress_contract_pass():
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"},
+        {"commit": "b2c", "phase": "contract", "feature": "auth", "scores": "-",
+         "total": "-", "status": "pass", "summary": "contract approved"},
+    ])
+    try:
+        p = read_progress(path)
+        assert p["phase"] == "build"
+        assert p["current_feature"] == "auth"
+    finally:
+        os.unlink(path)
+
+def test_read_progress_contract_fail():
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"},
+        {"commit": "b2c", "phase": "contract", "feature": "auth", "scores": "-",
+         "total": "-", "status": "fail", "summary": "scope too wide"},
+    ])
+    try:
+        p = read_progress(path)
+        assert p["phase"] == "build"
+        assert p["current_feature"] == "auth"
+    finally:
+        os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# generate_report tests
+# ---------------------------------------------------------------------------
+
+def test_generate_report_in_progress():
+    """Report shows structured progress for an in-progress run."""
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"},
+        {"commit": "b2c", "phase": "build", "feature": "auth", "scores": "-",
+         "total": "-", "status": "keep", "summary": "build"},
+        {"commit": "c3d", "phase": "eval", "feature": "auth", "scores": "8/9/8",
+         "total": "8.3", "status": "pass", "summary": "all pass"},
+        {"commit": "d4e", "phase": "build", "feature": "chat", "scores": "-",
+         "total": "-", "status": "keep", "summary": "build"},
+        {"commit": "e5f", "phase": "eval", "feature": "chat", "scores": "6/8/5",
+         "total": "6.3", "status": "fail", "summary": "E2E fail"},
+    ])
+    try:
+        report = generate_report(path)
+        assert "# Evolve Progress" in report
+        assert "In Progress" in report
+        assert "\u2713 auth" in report  # checkmark auth
+        assert "\u25b6 chat" in report  # triangle chat
+        assert "1/2" in report  # 1 of 2 features completed
+        assert "E2E fail" in report
+    finally:
+        os.unlink(path)
+
+
+def test_generate_report_all_done():
+    """Report shows completion when all features pass."""
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"},
+        {"commit": "b2c", "phase": "build", "feature": "auth", "scores": "-",
+         "total": "-", "status": "keep", "summary": "build"},
+        {"commit": "c3d", "phase": "eval", "feature": "auth", "scores": "8/9",
+         "total": "8.5", "status": "pass", "summary": "pass"},
+    ])
+    try:
+        report = generate_report(path)
+        assert "# Evolve Progress" in report
+        assert "\u2713 auth" in report
+        assert "1/1" in report
+    finally:
+        os.unlink(path)
+
+
+def test_generate_report_empty():
+    """Report for empty results.tsv."""
+    path = _make_tsv([])
+    try:
+        report = generate_report(path)
+        assert "# Evolve Progress" in report
+        assert "Waiting" in report
+    finally:
+        os.unlink(path)
+
+
+def test_generate_report_with_skip():
+    """Skipped features show cross marker."""
+    path = _make_tsv([
+        {"commit": "a1b", "phase": "plan", "feature": "-", "scores": "-",
+         "total": "-", "status": "keep", "summary": "spec"},
+        {"commit": "b2c", "phase": "eval", "feature": "chat", "scores": "-",
+         "total": "-", "status": "skip", "summary": "3 consecutive crashes"},
+    ])
+    try:
+        report = generate_report(path)
+        assert "\u2717 chat" in report  # cross chat
+        assert "skipped" in report
+    finally:
+        os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# Lock tests
+# ---------------------------------------------------------------------------
+
+def test_acquire_lock_fresh(tmp_path):
+    result = acquire_lock(str(tmp_path))
+    assert result["acquired"] is True
+    lock_file = tmp_path / "lock"
+    assert lock_file.exists()
+    data = json.loads(lock_file.read_text())
+    assert "heartbeat" in data
+    release_lock(str(tmp_path))
+    assert not lock_file.exists()
+
+def test_acquire_lock_blocked_by_active(tmp_path):
+    # First acquire
+    acquire_lock(str(tmp_path))
+    # Second acquire should be blocked (heartbeat is fresh)
+    result = acquire_lock(str(tmp_path))
+    assert result["acquired"] is False
+    assert "Another session" in result["reason"]
+    release_lock(str(tmp_path))
+
+def test_acquire_lock_stale_takeover(tmp_path):
+    # Write a stale lock (heartbeat 5 minutes ago)
+    lock_file = tmp_path / "lock"
+    lock_file.write_text(json.dumps({
+        "pid": 99999, "started": time.time() - 300,
+        "heartbeat": time.time() - 300, "phase": "build"
+    }))
+    # Should take over stale lock
+    result = acquire_lock(str(tmp_path))
+    assert result["acquired"] is True
+    release_lock(str(tmp_path))
+
+def test_update_lock_heartbeat(tmp_path):
+    acquire_lock(str(tmp_path))
+    update_lock(str(tmp_path), "eval", "auth")
+    lock_file = tmp_path / "lock"
+    data = json.loads(lock_file.read_text())
+    assert data["phase"] == "eval"
+    assert data["feature"] == "auth"
+    release_lock(str(tmp_path))
+
+def test_release_lock_idempotent(tmp_path):
+    # Releasing a non-existent lock should not error
+    release_lock(str(tmp_path))
+    release_lock(str(tmp_path))
+
+# ---------------------------------------------------------------------------
+# eval.yml tests
+# ---------------------------------------------------------------------------
+
+def test_load_eval_config_basic(tmp_path):
+    """Parse a standard eval.yml with mixed dimension types."""
+    yml = tmp_path / "eval.yml"
+    yml.write_text("""# Evaluation dimensions
+dimensions:
+  - name: Functional Completeness
+    type: deterministic
+    cmd: npm test
+    threshold: 7.0
+  - name: Code Quality
+    type: llm-judged
+    threshold: 7.0
+  - name: Performance
+    type: deterministic
+    cmd: python .evolve/bench.py
+    threshold: 8.0
+""")
+    dims = load_eval_config(str(yml))
+    assert len(dims) == 3
+    assert dims[0]["name"] == "Functional Completeness"
+    assert dims[0]["type"] == "deterministic"
+    assert dims[0]["cmd"] == "npm test"
+    assert dims[0]["threshold"] == 7.0
+    assert dims[1]["name"] == "Code Quality"
+    assert dims[1]["type"] == "llm-judged"
+    assert "cmd" not in dims[1]
+    assert dims[1]["threshold"] == 7.0
+    assert dims[2]["threshold"] == 8.0
+
+
+def test_load_eval_config_missing_file():
+    """Missing eval.yml raises FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+        load_eval_config("/nonexistent/eval.yml")
+
+
+def test_load_eval_config_defaults(tmp_path):
+    """Dimensions without type/threshold get defaults."""
+    yml = tmp_path / "eval.yml"
+    yml.write_text("""dimensions:
+  - name: Simple Dimension
+""")
+    dims = load_eval_config(str(yml))
+    assert len(dims) == 1
+    assert dims[0]["type"] == "llm-judged"
+    assert dims[0]["threshold"] == 7.0
+
+
+def test_load_eval_config_comments_and_blanks(tmp_path):
+    """Comments and blank lines are ignored."""
+    yml = tmp_path / "eval.yml"
+    yml.write_text("""# This is a comment
+dimensions:
+
+  # Another comment
+  - name: Dimension A
+    type: deterministic
+    cmd: pytest
+    threshold: 8.0
+
+  - name: Dimension B
+    threshold: 6.0
+""")
+    dims = load_eval_config(str(yml))
+    assert len(dims) == 2
+    assert dims[0]["name"] == "Dimension A"
+    assert dims[1]["name"] == "Dimension B"
+    assert dims[1]["threshold"] == 6.0
+
+# ---------------------------------------------------------------------------
+# adapter loading tests
+# ---------------------------------------------------------------------------
+
+def test_load_adapter_from_path(tmp_path):
+    """Load a project-specific adapter from file path."""
+    adapter_file = tmp_path / "adapter.py"
+    adapter_file.write_text("""
+prerequisites = [
+    {"name": "node", "check": "node --version"}
+]
+
+def setup(project_dir):
+    return {"status": "ready", "info": {}, "error": None}
+
+def run_checks(project_dir, feature):
+    return {"scores": {}, "details": "no checks"}
+
+def teardown(info):
+    pass
+""")
+    adapter = load_adapter(str(adapter_file))
+    assert hasattr(adapter, 'setup')
+    assert hasattr(adapter, 'run_checks')
+    assert hasattr(adapter, 'teardown')
+    assert hasattr(adapter, 'prerequisites')
+    assert len(adapter.prerequisites) == 1
+    result = adapter.setup("/tmp")
+    assert result["status"] == "ready"
+
+
+def test_load_adapter_missing_file():
+    """Missing adapter file raises FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+        load_adapter("/nonexistent/adapter.py")
+
+
+def test_load_adapter_missing_functions(tmp_path):
+    """Adapter missing required functions raises ValueError."""
+    adapter_file = tmp_path / "adapter.py"
+    adapter_file.write_text("""
+def setup(project_dir):
+    return {"status": "ready", "info": {}, "error": None}
+# missing run_checks and teardown
+""")
+    with pytest.raises(ValueError, match="missing required functions"):
+        load_adapter(str(adapter_file))
+
+
+def test_load_adapter_no_prerequisites(tmp_path):
+    """Adapter without prerequisites attribute gets empty default."""
+    adapter_file = tmp_path / "adapter.py"
+    adapter_file.write_text("""
+def setup(project_dir):
+    return {"status": "ready", "info": {}, "error": None}
+
+def run_checks(project_dir, feature):
+    return {"scores": {}, "details": ""}
+
+def teardown(info):
+    pass
+""")
+    adapter = load_adapter(str(adapter_file))
+    assert adapter.prerequisites == []

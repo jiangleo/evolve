@@ -1,0 +1,245 @@
+# Evolve
+
+**Define a goal. AI builds, evaluates, and iterates until it's met.**
+
+Autonomous build-evaluate-iterate loop as a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill. Inspired by [Anthropic's harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) and [Karpathy's autoresearch](https://github.com/karpathy/autoresearch).
+
+## When to Use
+
+Evolve is for tasks where **"good enough" isn't good enough** and you want AI to keep iterating until quality thresholds are met.
+
+| Scenario | What Evolve Does |
+|----------|-----------------|
+| Build a web app from scratch | Implements features one by one, runs tests after each, fixes failures automatically |
+| Tune an AI chatbot | Simulates real users talking to your bot, scores conversation quality, rewrites prompts until scores pass |
+| Create teaching materials | Builds content, evaluates against pedagogical criteria, revises until all dimensions pass |
+| Improve existing code | Refactors feature by feature, evaluates each change, rolls back if quality drops |
+
+**Not a good fit for:** one-shot tasks, quick fixes, or anything where you can judge quality faster than an eval loop can.
+
+## Prerequisites
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (CLI or IDE extension)
+- Python 3.8+
+- Git
+
+> **Note:** `/evolve` and `/loop` are slash commands you type inside Claude Code's chat input, not shell commands. If you're new to Claude Code skills, see [the skills docs](https://docs.anthropic.com/en/docs/claude-code/skills).
+
+## Quick Start
+
+### 1. Install
+
+```bash
+# From your project root:
+mkdir -p .claude/skills
+git clone https://github.com/anthropics/evolve .claude/skills/evolve
+```
+
+### 2. Init (interactive, ~5 min)
+
+```
+/evolve
+```
+
+Evolve walks you through setup:
+
+```
+Step 1  Scans your project          (automatic)
+        → "Detected FastAPI + pytest, entry at app/main.py"
+
+Step 2  Asks what you want          (1-2 questions)
+        → "What do you want to build/improve?"
+
+Step 3  Generates eval criteria     (automatic, you confirm)
+        → "Suggested: Functional Completeness 7.0, Code Quality 7.0"
+        → "Want to adjust?"
+
+Step 4  Generates program.md        (field-by-field confirmation)
+        → Tech constraints, dependency rules, no-go zones
+
+Step 5  Validates everything        (automatic)
+        → ✓ adapter loadable, ✓ python3, ✓ git
+
+Step 6  Asks which LLM evaluates    (1 question)
+        → Codex (recommended), Claude, or other
+
+Step 7  Generates feature spec      (automatic, you review)
+        → "Init complete. Run /loop 1m /evolve to start."
+```
+
+After Init, your project has a `.evolve/` directory with all configuration.
+
+### 3. Run the Loop (autonomous)
+
+```
+/loop 1m /evolve
+```
+
+> `/loop` is a separate Claude Code skill that runs a slash command on a recurring interval. If you don't have it, you can manually type `/evolve` each time instead -- the skill recovers state from files and picks up where it left off.
+
+This triggers `/evolve` every minute. Each invocation is a **new session** that recovers state from `.evolve/` files. The AI:
+
+1. Picks the next unfinished feature from `spec.md`
+2. Writes a sprint contract, then implements it
+3. Commits the code (`git commit`)
+4. Runs the evaluator (separate LLM) to score the feature
+5. If **pass** → moves to the next feature
+6. If **fail** → reads the feedback, fixes, tries again
+7. If **3+ consecutive failures** → resets and retries once, then skips
+
+You can walk away. Come back and check `.evolve/report.md` for progress.
+
+### 4. Resume / Check Progress
+
+```
+/evolve
+```
+
+If `.evolve/results.tsv` exists, Evolve shows a progress report instead of re-running Init:
+
+```
+# Evolve Progress
+## Status: In Progress -- Round 12
+
+## Feature Progress
+  ✓ User Auth       -- passed round 3 (7.8)
+  ✓ Data Import     -- passed round 5 (8.2)
+  ▶ API Rate Limit  -- 2 attempts, last: "missing sliding window"
+  · Data Export     -- not started
+```
+
+## Example: Building a REST API from Scratch
+
+Here's what a real session looks like, end to end.
+
+**You type:**
+```
+/evolve
+```
+
+**Evolve scans your project and asks:**
+```
+Detected: Node.js + Express project, vitest available.
+What do you want to build?
+```
+
+**You say:**
+```
+A REST API with user auth (JWT), a chat endpoint, and file upload.
+```
+
+**Evolve generates eval criteria and asks you to confirm:**
+```
+Evaluation dimensions:
+  1. Test Pass Rate — deterministic (vitest), threshold 7.0
+  2. Code Quality — llm-judged, threshold 7.0
+  3. API Correctness — llm-judged, threshold 7.0
+Adjust? (Y/n)
+```
+
+**You confirm, then start the loop:**
+```
+/loop 1m /evolve
+```
+
+**30 minutes later, you check back:**
+```
+/evolve
+
+# Evolve Progress — Round 14
+  ✓ JWT Auth        — passed round 4  (8.1)
+  ✓ Chat Endpoint   — passed round 8  (7.6)
+  ▶ File Upload     — attempt 2, last: "missing size validation"
+```
+
+**1 hour later:**
+```
+# Evolve Progress — Round 22
+  ✓ JWT Auth        — passed round 4  (8.1)
+  ✓ Chat Endpoint   — passed round 8  (7.6)
+  ✓ File Upload     — passed round 16 (7.8)
+  All features passed. Done.
+```
+
+**You review the result:**
+```bash
+git log --oneline evolve/rest-api
+# a1b2c3d feat: JWT auth with refresh tokens
+# b2c3d4e feat: chat endpoint with rate limiting
+# c3d4e5f feat: file upload with size + type validation
+```
+
+Three atomic commits on a feature branch, ready to merge.
+
+## Key Concepts
+
+### Builder ≠ Evaluator
+
+The AI that writes the code is **not** the same one that judges it. This prevents self-congratulatory scoring. During Init, you pick an independent evaluator (Codex, a separate Claude instance, etc.).
+
+### Everything is a File
+
+All state lives in `.evolve/`. No database, no server, no daemon. If you delete `.evolve/`, it's a clean slate. If you want to tweak the spec mid-run, edit `.evolve/spec.md` and the next loop picks it up.
+
+| File | What It Does | Who Writes It |
+|------|-------------|---------------|
+| `program.md` | Your goals + constraints | You (during Init) |
+| `eval.yml` | Evaluation dimensions + thresholds | Init (you confirm) |
+| `adapter.py` | How to set up/test your project | Init (auto-generated) |
+| `spec.md` | Feature list + acceptance criteria | Planner |
+| `results.tsv` | Full iteration history | Build + Eval (append-only) |
+| `evaluation.md` | Latest scores + fix priorities | Evaluator |
+| `report.md` | Human-readable progress | Generated each round |
+
+### Adapters
+
+Each project gets a custom `adapter.py` auto-generated during Init. It tells Evolve how to start your app, run tests, and clean up. Three reference adapters ship with the skill:
+
+| Adapter | For | Scoring |
+|---------|-----|---------|
+| `web_app.py` | Web apps (FastAPI, Flask, Node) | Test pass rate (deterministic) + LLM review |
+| `teaching.py` | Educational content | All LLM-judged |
+| `chat_agent.py` | Chat agents ([OpenClaw](https://github.com/nicepkg/openclaw)) | Simulated conversations + LLM-judged |
+
+You don't pick from this list -- the Agent reads them as **examples** during Init, then generates one tailored to your project.
+
+## Important Notes
+
+### Before You Start
+
+- **Commit your work first.** Evolve creates a `evolve/<tag>` branch and makes commits there. Your main branch is untouched, but uncommitted changes could get messy.
+- **Have tests if possible.** Evolve works without tests (using LLM-only evaluation), but deterministic scoring from real tests is far more reliable.
+- **Pick the right evaluator.** Codex is recommended because it's an independent LLM. Using the same Claude instance that builds the code to also judge it defeats the purpose.
+
+### During a Run
+
+- **Don't delete `.evolve/` mid-run.** It's the loop's entire memory. Deleting it mid-run means starting over.
+- **You can edit `spec.md` mid-run.** Add, remove, or reorder features. The next loop iteration picks up changes.
+- **Don't edit `program.md` unless you know what you're doing.** It's the contract between you and the AI. Changing constraints mid-run can confuse the evaluator.
+- **100-iteration hard cap.** The loop stops automatically after 100 rounds to prevent runaway costs.
+- **Check `run.log` if things look stuck.** Build output goes there, not into the agent's context window.
+
+### After It's Done
+
+- **Review the git log.** Every feature is one commit on the `evolve/<tag>` branch. Cherry-pick or merge as you see fit.
+- **Read `report.md`.** It shows which features passed, which were skipped, and why.
+- **Delete `.evolve/` when satisfied.** It's gitignored by default and not meant to be permanent.
+
+## Design Choices
+
+| Decision | Reason |
+|----------|--------|
+| Claude Code skill, not standalone tool | Runs inside Claude Code's permission system -- no need to reimplement file/git/command access |
+| File-based state, not database | Inspectable, editable, diff-able. `cat .evolve/results.tsv` shows exactly what happened |
+| One commit per feature | Atomic git history. Revert one feature without touching others |
+| 2-minute lock timeout | Long enough to avoid collisions, short enough that a crash doesn't block the next `/loop` run |
+
+## Running Tests
+
+```bash
+python -m pytest tests/ -v    # 50 tests, ~0.1s
+```
+
+## License
+
+MIT
