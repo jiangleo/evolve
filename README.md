@@ -6,7 +6,7 @@
 **定义目标，AI 自动构建、评估、迭代，直到达标。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-50%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-51%20passed-brightgreen.svg)]()
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)]()
 
 一个 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) Skill。你定义想要什么和怎么算好，AI 自己写代码、自己打分、不及格自己改，直到过线。灵感来自 [Anthropic 的 harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) 和 [Karpathy 的 autoresearch](https://github.com/karpathy/autoresearch)。
@@ -58,12 +58,9 @@ git clone https://github.com/jiangleo/evolve .claude/skills/evolve
 
 ```
 Step 1  扫描项目              （自动）
-Step 2  问你要做什么           （1-2 个问题）
-Step 3  生成评估标准           （你确认）
-Step 4  生成 program.md       （逐字段确认）
-Step 5  校验所有配置           （自动）
-Step 6  选评估器              （1 个问题）
-Step 7  生成功能清单           （你审阅）
+Step 2  头脑风暴              （3-5 个问题，帮你理清目标）
+Step 3  生成 program.md       （含功能列表 + 评估标准，你确认）
+Step 4  校验 + 创建分支        （自动）
 ```
 
 ### 3. 启动自动循环（无人值守）
@@ -160,19 +157,17 @@ git log --oneline evolve/rest-api
 
 ## 核心概念
 
-**构建者 ≠ 评估者** — 写代码的 AI 和打分的 AI 不是同一个。Init 时你选一个独立评估器（Codex、单独的 Claude 实例等）。自己写自己评，分数��可信。
+**三个 Agent，各司其职** — O (Orchestrator) 和你对话、调度；B (Builder) 只写代码；C (Critic) 评估 + 做战略决策。写代码的和打分的不是同一个 Agent，独立评估器（Codex/Claude CLI）由代码强制调用。
 
-**一切都是文件** — 状态全在 `.evolve/` 里，没有数据库，没有服务。删掉这个目录就回到原点。中途想改需求，直接编辑 `spec.md`，下一轮自动生效。
+**一切都是文件** — 状态全在 `.evolve/` 里，没有数据库，没有服务。删掉这个目录就回到原点。
 
 | 文件 | 作用 | 谁写的 |
 |------|------|--------|
-| `program.md` | 你的目标和约束 | 你（Init 时） |
-| `eval.yml` | 评估维度和阈值 | Init 自动生成（你确认） |
+| `program.md` | 你的目标 + 功能列表 + 评估标准 | 你（Init 时） |
 | `adapter.py` | 怎么启动/测试你的项目 | Init 自动生成 |
-| `spec.md` | 功能列表 + 验收标准 | Planner |
-| `results.tsv` | 完整迭代记录 | Build + Eval（只追加） |
-| `evaluation.md` | 最新评分 + 修复优先级 | 评估器 |
-| `report.md` | 人类可读的进度报告 | 每轮自动生成 |
+| `strategy.md` | C 的战略决策：方向、轨迹、下一步 | C（每轮覆写） |
+| `results.tsv` | 完整迭代记录 | B + C（只追加） |
+| `run.log` | 所有 Agent 输出 | O + B + C（只追加） |
 
 **Adapter** — Init 时根据你的项目自动生成 `adapter.py`，告诉 Evolve 怎么跑你的项目。仓库里附了三个参考：
 
@@ -222,14 +217,16 @@ git log --oneline evolve/rest-api
 | 决策 | 原因 |
 |------|------|
 | 做成 Claude Code skill | 直接复用 Claude Code 的文件、git、命令权限，不用自己造轮子 |
-| 用文件存状态 | 能看、能改、能 diff，不需要装数据库 |
-| 一个功能一个 commit | 方便单独回滚 |
+| 3 Agent (O/B/C) 单循环 | 比内外循环简单，C 拥有最新上下文做战略决策 |
+| 独立评估器由代码强制 | `validate_eval_result()` 在 prepare.py 里，AI 绕不过去 |
+| strategy.md 跨 session | 每轮新 session，但 C 的战略决策通过文件持久化 |
+| `should_stop()` 在 AI 启动前运行 | AI 不参与停止决策，硬编码在 prepare.py |
 | 锁 2 分钟过期 | 防撞车，崩了也不卡下一轮 |
 
 ## 运行测试
 
 ```bash
-python -m pytest tests/ -v    # 50 个测试，约 0.1 秒
+python -m pytest tests/ -v    # 51 个测试，约 0.1 秒
 ```
 
 ## 许可证
