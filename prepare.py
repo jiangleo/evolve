@@ -492,6 +492,130 @@ def generate_report(results_tsv: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Context Preparation (called by UserPromptSubmit hook)
+# ---------------------------------------------------------------------------
+
+def prepare_context(evolve_dir: str) -> dict:
+    """
+    One-shot context preparation. Called by hook BEFORE AI starts.
+    Returns everything O needs to dispatch — AI makes zero tool calls for setup.
+
+    Returns dict with:
+        action:  "dispatch_B" | "dispatch_C" | "report_only" | "stop" | "not_evolve"
+        reason:  why (for stop/report_only)
+        phase:   "build" | "eval"
+        feature: current feature name
+        progress: read_progress() result
+        files:   dict of file contents {name: content}
+        report:  1-line progress summary
+    """
+    evolve_path = Path(evolve_dir)
+    results_tsv = str(evolve_path / "results.tsv")
+
+    # Not initialized yet
+    if not evolve_path.exists() or not (evolve_path / "results.tsv").exists():
+        return {"action": "not_evolve", "reason": "no .evolve/ directory"}
+
+    # Lock
+    lock = acquire_lock(evolve_dir)
+    if not lock["acquired"]:
+        progress = read_progress(results_tsv)
+        report = generate_report(results_tsv)
+        return {
+            "action": "report_only",
+            "reason": lock["reason"],
+            "progress": progress,
+            "report": report,
+        }
+
+    # Progress + phase
+    progress = read_progress(results_tsv)
+
+    # Read spec.md to find current feature
+    spec_path = evolve_path / "spec.md"
+    spec_content = spec_path.read_text() if spec_path.exists() else ""
+
+    # Determine current feature
+    feature = progress.get("current_feature")
+    if not feature and spec_content:
+        # Find first uncompleted feature from spec
+        completed = set(progress.get("completed_features", []))
+        for line in spec_content.split("\n"):
+            line = line.strip()
+            if line.startswith("- [ ]"):
+                feat_name = line[5:].strip().split("—")[0].split("–")[0].strip()
+                if feat_name and feat_name not in completed:
+                    feature = feat_name
+                    break
+
+    if not feature:
+        feature = "unknown"
+
+    # Stop conditions
+    stop, stop_reason = should_stop(results_tsv, feature)
+    if stop:
+        release_lock(evolve_dir)
+        return {
+            "action": "stop",
+            "reason": stop_reason,
+            "progress": progress,
+            "report": generate_report(results_tsv),
+        }
+
+    # Check if all features done
+    if spec_content:
+        all_features = []
+        for line in spec_content.split("\n"):
+            line = line.strip()
+            if line.startswith("- ["):
+                feat_name = line[5:].strip().split("—")[0].split("–")[0].strip()
+                if feat_name:
+                    all_features.append(feat_name)
+        completed = progress.get("completed_features", [])
+        if all_features and all(f in completed for f in all_features):
+            release_lock(evolve_dir)
+            return {
+                "action": "stop",
+                "reason": "All features passed",
+                "progress": progress,
+                "report": generate_report(results_tsv),
+            }
+
+    # Determine action from phase
+    phase = progress.get("phase", "init")
+    if phase == "eval":
+        action = "dispatch_C"
+    else:
+        action = "dispatch_B"
+
+    # Read all context files
+    files = {}
+    for name in ["program.md", "spec.md", "eval.yml", "strategy.md"]:
+        p = evolve_path / name
+        if p.exists():
+            files[name] = p.read_text()
+
+    # results.tsv: last 20 lines
+    tsv_path = evolve_path / "results.tsv"
+    if tsv_path.exists():
+        lines = tsv_path.read_text().strip().split("\n")
+        files["results.tsv"] = "\n".join(lines[:1] + lines[-20:]) if len(lines) > 21 else "\n".join(lines)
+
+    # Trajectory for current feature
+    trajectory = analyze_trajectory(results_tsv, feature)
+
+    return {
+        "action": action,
+        "phase": phase,
+        "feature": feature,
+        "progress": progress,
+        "trajectory": trajectory,
+        "files": files,
+        "report": generate_report(results_tsv),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Lock (concurrency guard for /loop)
 # ---------------------------------------------------------------------------
 
