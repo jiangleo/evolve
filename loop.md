@@ -19,8 +19,8 @@ from prepare import acquire_lock, update_lock, release_lock
 
 lock = acquire_lock(".evolve")
 if not lock["acquired"]:
-    print(f"Waiting: {lock['reason']}")
-    -> stop immediately
+    # Still show progress even when another session is running
+    -> Progress Report (see below), then stop immediately
 ```
 
 Call `update_lock(".evolve", phase, feature)` at every major step.
@@ -283,6 +283,31 @@ release_lock(".evolve")
 ```
 
 Output report to user, stop the loop.
+
+---
+
+## Progress Report (EVERY round, ALWAYS)
+
+**No matter what happened this round** — acquired lock or not, did work or not, build or eval — ALWAYS end with a brief progress summary. The user sees this every minute.
+
+### Format
+
+```
+📍 Round N | Feature: <name> | Phase: <build|eval> | Status: <what just happened>
+   Passed: M/T features | Latest score: X.X | Details: .evolve/report.md
+```
+
+### Rules
+
+1. **One-liner first** — the `📍` line above. This is what the user scans.
+2. **File link** — always include `.evolve/report.md` path so user can click for details.
+3. **Update report.md** — call `generate_report()` and write to `.evolve/report.md` before outputting the summary.
+4. **Lock-not-acquired case** — read results.tsv (read-only, no lock needed), show progress, note another session is running:
+   ```
+   📍 Round 14 | Feature: 文件上传 | Phase: build (另一个 session 正在执行)
+      Passed: 2/3 features | Latest score: 7.2 | Details: .evolve/report.md
+   ```
+5. **Keep it short** — 1-2 lines max. No lengthy explanations.
 
 ---
 
