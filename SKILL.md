@@ -252,32 +252,15 @@ Example:
 - program.md: .evolve/program.md
 - spec.md: .evolve/spec.md
 
-需要调整吗？(Y/n)
+⚠️ 确认后将自动启动循环（每分钟一轮，最长 24 小时）。
+过程中你可以走开，AI 自动构建、评估、迭代。Ctrl+C 可停。
+
+确认启动？(Y/n)
 ```
 
-User confirms → proceed to auto-start.
+**IMPORTANT:** This is the second and final confirmation (first was program.md). The auto-start reminder MUST be included in this confirmation — do NOT add a third confirmation step.
 
-#### Auto-Start Loop (requires explicit user confirmation)
-
-After user confirms the execution plan, O MUST:
-
-1. **Remind** the user that the loop will run automatically after confirmation
-2. **Wait** for explicit user confirmation before starting
-
-```
-O: "⚠️ 确认后将自动启动循环（每分钟一轮，最长运行 24 小时）。
-    过程中你可以走开，AI 会自动构建、评估、迭代。
-    随时可以用 Ctrl+C 停止。
-
-    确认启动？(Y/n)"
-
-User: Y
-
-O: "正在启动自动循环..."
--> O invokes Skill("loop", args="1m /evolve")
-```
-
-**IMPORTANT:** Do NOT auto-start without this final confirmation. The user must explicitly agree to start the autonomous loop.
+User confirms → O immediately invokes `Skill("loop", args="1m /evolve")`.
 
 ---
 
