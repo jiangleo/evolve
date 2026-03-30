@@ -6,7 +6,7 @@
 **Define a goal. AI builds, evaluates, and iterates until it's met.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-51%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-70%20passed-brightgreen.svg)]()
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)]()
 
 A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill. You define what you want and what "good" looks like. AI writes the code, scores it, and fixes what doesn't pass -- on repeat, until everything does. Inspired by [Anthropic's harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) and [Karpathy's autoresearch](https://github.com/karpathy/autoresearch).
@@ -226,7 +226,7 @@ Three atomic commits on a feature branch, ready to merge.
 ## Running Tests
 
 ```bash
-python -m pytest tests/ -v    # 51 tests, ~0.1s
+python -m pytest tests/ -v    # 70 tests, ~0.1s
 ```
 
 ## License

@@ -6,7 +6,7 @@
 **定义目标，AI 自动构建、评估、迭代，直到达标。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-51%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-70%20passed-brightgreen.svg)]()
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)]()
 
 一个 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) Skill。你定义想要什么和怎么算好，AI 自己写代码、自己打分、不及格自己改，直到过线。灵感来自 [Anthropic 的 harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) 和 [Karpathy 的 autoresearch](https://github.com/karpathy/autoresearch)。
@@ -226,7 +226,7 @@ git log --oneline evolve/rest-api
 ## 运行测试
 
 ```bash
-python -m pytest tests/ -v    # 51 个测试，约 0.1 秒
+python -m pytest tests/ -v    # 70 个测试，约 0.1 秒
 ```
 
 ## 许可证
