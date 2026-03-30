@@ -9,7 +9,8 @@ from prepare import (append_result, read_progress, HEADER_FIELDS,
                      analyze_trajectory, should_stop, validate_eval_result,
                      get_evaluator, HARD_LIMITS, INDEPENDENT_EVALUATORS,
                      build_manifest, prepare_dispatch, _find_current_feature,
-                     _parse_uncompleted_features)
+                     _parse_uncompleted_features,
+                     _parse_file_spec, _extract_section)
 
 def test_append_result_creates_header():
     with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as f:
@@ -1077,3 +1078,175 @@ def test_prepare_dispatch_invalid_target(tmp_path):
     """Rejects invalid target values."""
     with pytest.raises(ValueError, match="Invalid dispatch target"):
         prepare_dispatch(str(tmp_path), "X", ["program.md"])
+
+
+def test_prepare_dispatch_line_range(tmp_path):
+    """Extracts specific line range from a file."""
+    lines = [f"Line {i}" for i in range(1, 101)]  # 100 lines
+    (tmp_path / "big.md").write_text("\n".join(lines))
+
+    prepare_dispatch(str(tmp_path), "B", ["big.md:10-15"])
+
+    content = (tmp_path / "dispatch_B.md").read_text()
+    assert "## big.md:10-15" in content
+    assert "Line 10" in content
+    assert "Line 15" in content
+    assert "Line 9" not in content
+    assert "Line 16" not in content
+
+
+def test_prepare_dispatch_line_range_single(tmp_path):
+    """Supports single line spec like 'file.md:42'."""
+    lines = [f"Line {i}" for i in range(1, 51)]
+    (tmp_path / "doc.md").write_text("\n".join(lines))
+
+    prepare_dispatch(str(tmp_path), "C", ["doc.md:42"])
+
+    content = (tmp_path / "dispatch_C.md").read_text()
+    assert "Line 42" in content
+    assert "Line 41" not in content
+    assert "Line 43" not in content
+
+
+def test_prepare_dispatch_line_range_with_full_file(tmp_path):
+    """Line range and full files can be mixed."""
+    (tmp_path / "small.md").write_text("Full content here")
+    lines = [f"L{i}" for i in range(1, 201)]
+    (tmp_path / "big.md").write_text("\n".join(lines))
+
+    prepare_dispatch(str(tmp_path), "B", ["small.md", "big.md:50-60"])
+
+    content = (tmp_path / "dispatch_B.md").read_text()
+    assert "Full content here" in content
+    assert "L50" in content
+    assert "L60" in content
+    assert "L49" not in content
+
+
+# ---------------------------------------------------------------------------
+# Section extraction tests
+# ---------------------------------------------------------------------------
+
+def test_extract_section_basic():
+    """Extracts a section from heading to next same-level heading."""
+    doc = """# Intro
+Some intro
+
+## Feature A
+Feature A content
+More A content
+
+## Feature B
+Feature B content
+"""
+    result = _extract_section(doc, "Feature A")
+    assert "Feature A content" in result
+    assert "More A content" in result
+    assert "Feature B" not in result
+    assert "Intro" not in result
+
+
+def test_extract_section_nested():
+    """Includes nested subheadings within the section."""
+    doc = """## F07 Pattern Mirror
+F07 overview
+
+### Design Goals
+Goal 1
+
+### Implementation
+Code here
+
+## F08 Something Else
+Other stuff
+"""
+    result = _extract_section(doc, "F07")
+    assert "F07 overview" in result
+    assert "Goal 1" in result
+    assert "Code here" in result
+    assert "F08" not in result
+
+
+def test_extract_section_not_found():
+    """Returns message when section not found."""
+    result = _extract_section("# Only Section\nContent", "Nonexistent")
+    assert "not found" in result
+
+
+def test_extract_section_case_insensitive():
+    """Section matching is case-insensitive."""
+    doc = "## My Feature\nContent here\n## Other\nOther content"
+    result = _extract_section(doc, "my feature")
+    assert "Content here" in result
+
+
+def test_prepare_dispatch_section_syntax(tmp_path):
+    """Supports #section syntax in file list."""
+    doc = """# Product Design
+
+## F01 Login
+Login specs here
+
+## F02 Canvas
+Canvas Card C specs
+Canvas Card D specs
+
+## F03 Dashboard
+Dashboard specs
+"""
+    (tmp_path / "design.md").write_text(doc)
+
+    prepare_dispatch(str(tmp_path), "B", ["design.md#F02"])
+
+    content = (tmp_path / "dispatch_B.md").read_text()
+    assert "Canvas Card C specs" in content
+    assert "Canvas Card D specs" in content
+    assert "Login specs" not in content
+    assert "Dashboard specs" not in content
+
+
+def test_prepare_dispatch_mixed_specs(tmp_path):
+    """Mixes full files, line ranges, and section specs."""
+    (tmp_path / "small.md").write_text("Small file")
+    lines = [f"Line {i}" for i in range(1, 51)]
+    (tmp_path / "big.md").write_text("\n".join(lines))
+    (tmp_path / "doc.md").write_text("# Intro\nIntro\n## Target\nTarget content\n## Other\nOther")
+
+    prepare_dispatch(str(tmp_path), "C", [
+        "small.md",
+        "big.md:10-15",
+        "doc.md#Target",
+    ])
+
+    content = (tmp_path / "dispatch_C.md").read_text()
+    assert "Small file" in content
+    assert "Line 10" in content
+    assert "Line 16" not in content
+    assert "Target content" in content
+    assert "Other" not in content  # section extraction excludes other sections
+
+
+def test_parse_file_spec_plain():
+    """Plain filename returns no slicer."""
+    name, slicer = _parse_file_spec("program.md")
+    assert name == "program.md"
+    assert slicer is None
+
+
+def test_parse_file_spec_line_range():
+    """Line range returns slicer function."""
+    name, slicer = _parse_file_spec("doc.md:10-20")
+    assert name == "doc.md"
+    assert slicer is not None
+    content = "\n".join(f"L{i}" for i in range(1, 31))
+    result = slicer(content)
+    assert "L10" in result
+    assert "L20" in result
+    assert "L9" not in result
+
+
+def test_parse_file_spec_section():
+    """Section spec returns slicer function."""
+    name, slicer = _parse_file_spec("design.md#F07")
+    assert name == "design.md"
+    assert slicer is not None

@@ -3,8 +3,8 @@
 UserPromptSubmit hook for Evolve.
 
 Called by Claude Code BEFORE AI processes the prompt.
-If prompt contains "/evolve" and .evolve/ exists, updates manifest.md via Haiku.
-O reads manifest.md to decide dispatch — Hook does NOT inject dispatch decisions.
+Minimal hook: just checks if /evolve is active. All real work is done by
+H agent (manifest, context prep) and O agent (dispatch decisions).
 
 Install: add to .claude/settings.json hooks.UserPromptSubmit
 """
@@ -15,7 +15,6 @@ from pathlib import Path
 
 
 def main():
-    # Read hook input from stdin
     try:
         hook_input = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError):
@@ -23,31 +22,16 @@ def main():
 
     prompt = hook_input.get("prompt", "")
 
-    # Only activate for /evolve
     if "/evolve" not in prompt:
         sys.exit(0)
 
-    # Find project dir
+    # Just verify .evolve/ exists — all real work is done by H and O agents
     project_dir = Path(hook_input.get("cwd", "."))
     evolve_dir = project_dir / ".evolve"
 
     if not evolve_dir.exists():
         sys.exit(0)
 
-    # Import prepare.py from the skill directory
-    skill_dir = project_dir / ".claude" / "skills" / "evolve"
-    if not skill_dir.exists():
-        # Try direct project root (for development)
-        skill_dir = project_dir
-
-    sys.path.insert(0, str(skill_dir))
-    from prepare import build_manifest
-
-    # Update manifest.md (Haiku summarizes current state)
-    # Hook does NOT acquire lock — that's O's job during dispatch
-    build_manifest(str(evolve_dir))
-
-    # No additionalContext injection — O reads manifest.md itself
     sys.exit(0)
 
 

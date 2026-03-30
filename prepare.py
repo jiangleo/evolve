@@ -617,6 +617,71 @@ def build_manifest(evolve_dir: str) -> str:
     return manifest
 
 
+def _parse_file_spec(file_spec: str):
+    """
+    Parse a file spec into (filename, slicer_fn_or_None).
+
+    Supported formats:
+        "file.md"              → full file
+        "file.md:100-200"      → lines 100-200 (1-based)
+        "file.md:42"           → single line 42
+        "file.md#Section Name" → heading-based section extraction
+    """
+    # Line range: "file.md:100-200" or "file.md:42"
+    if ":" in file_spec:
+        name, range_str = file_spec.rsplit(":", 1)
+        if range_str.replace("-", "").isdigit():
+            parts = range_str.split("-", 1)
+            start = int(parts[0])
+            end = int(parts[1]) if len(parts) > 1 else start
+            def line_slicer(content, s=start, e=end):
+                all_lines = content.split("\n")
+                return "\n".join(all_lines[s - 1:e])
+            return name, line_slicer
+
+    # Section: "file.md#Section Name"
+    if "#" in file_spec:
+        name, section = file_spec.split("#", 1)
+        def section_slicer(content, sec=section):
+            return _extract_section(content, sec)
+        return name, section_slicer
+
+    return file_spec, None
+
+
+def _extract_section(content: str, section_name: str) -> str:
+    """
+    Extract a markdown section by heading name.
+
+    Finds the heading containing section_name, returns everything
+    from that heading to the next heading of equal or higher level.
+    """
+    lines = content.split("\n")
+    start_idx = None
+    start_level = None
+
+    for i, line in enumerate(lines):
+        if line.startswith("#") and section_name.lower() in line.lower():
+            start_idx = i
+            start_level = len(line) - len(line.lstrip("#"))
+            break
+
+    if start_idx is None:
+        return f"(section '{section_name}' not found)"
+
+    # Find the end: next heading of same or higher level
+    end_idx = len(lines)
+    for i in range(start_idx + 1, len(lines)):
+        line = lines[i]
+        if line.startswith("#"):
+            level = len(line) - len(line.lstrip("#"))
+            if level <= start_level:
+                end_idx = i
+                break
+
+    return "\n".join(lines[start_idx:end_idx]).rstrip()
+
+
 def prepare_dispatch(evolve_dir: str, target: str, file_list: list,
                      note: str = "") -> str:
     """
@@ -638,16 +703,20 @@ def prepare_dispatch(evolve_dir: str, target: str, file_list: list,
     if note:
         sections.append(f"## Note from O\n{note}\n")
 
-    for filename in file_list:
+    for file_spec in file_list:
+        filename, content_slice = _parse_file_spec(file_spec)
+
         filepath = evolve_path / filename
         if not filepath.exists():
-            sections.append(f"## {filename}\n(file not found)\n")
+            sections.append(f"## {file_spec}\n(file not found)\n")
             continue
 
         content = filepath.read_text()
 
-        # Smart truncation for known large files
-        if filename == "results.tsv":
+        if content_slice:
+            content = content_slice(content)
+        # Smart truncation for known large files (only if no explicit spec)
+        elif filename == "results.tsv":
             lines = content.strip().split("\n")
             if len(lines) > 21:
                 content = "\n".join(lines[:1] + lines[-20:])
@@ -656,7 +725,7 @@ def prepare_dispatch(evolve_dir: str, target: str, file_list: list,
             if len(lines) > 50:
                 content = "\n".join(lines[-50:])
 
-        sections.append(f"## {filename}\n{content}\n")
+        sections.append(f"## {file_spec}\n{content}\n")
 
     dispatch_path = evolve_path / f"dispatch_{target}.md"
     dispatch_path.write_text("\n".join(sections))
