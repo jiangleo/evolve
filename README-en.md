@@ -196,7 +196,7 @@ Three atomic commits on a feature branch, ready to merge.
 - **Don't delete `.evolve/` mid-run.** It's the loop's entire memory.
 - **You can edit `spec.md` mid-run.** The next iteration picks up changes.
 - **Don't edit `program.md` unless you know what you're doing.** It's the contract between you and the AI.
-- **100-iteration hard cap.** Prevents runaway costs.
+- **24-hour / 100-iteration hard cap.** Prevents runaway costs.
 - **Check `run.log` if things look stuck.** Build output goes there, not into the agent's context.
 
 </details>

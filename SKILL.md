@@ -202,6 +202,7 @@ from prepare import load_adapter, load_eval_config
 - `git checkout -b evolve/<tag>`
 - Generate `.evolve/adapter.py` (from reference adapters + project scan)
 - Create `.evolve/results.tsv` (header only)
+- Create `.evolve/started_at` (current Unix timestamp — used by `should_stop()` for 24h runtime limit)
 - Create `.evolve/strategy.md` (empty template)
 - Create `.evolve/run.log` (empty)
 - Add `.evolve/` to `.gitignore`
@@ -242,7 +243,7 @@ Example:
 
 ### 循环机制
 每轮 ~2-3 分钟：B 写代码并 commit → C 调 Codex 独立评估 → 不及格自动修 → 及格进下一个。
-硬停止条件：总轮数 100 / 单 feature 30 轮 / 连续崩溃 5 次。
+硬停止条件：总运行 24 小时 / 总轮数 100 / 单 feature 30 轮 / 连续崩溃 5 次。
 
 ### 查看详情
 - program.md: .evolve/program.md

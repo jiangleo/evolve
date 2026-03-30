@@ -783,7 +783,7 @@ def test_hard_limits_keys():
     """HARD_LIMITS has all required keys."""
     expected = {"max_rounds_total", "max_rounds_per_feature",
                 "max_consecutive_crashes", "max_consecutive_fails",
-                "max_flat_after_pivot"}
+                "max_flat_after_pivot", "max_runtime_hours"}
     assert set(HARD_LIMITS.keys()) == expected
 
 
@@ -794,6 +794,29 @@ def test_hard_limits_values():
     assert HARD_LIMITS["max_consecutive_crashes"] == 5
     assert HARD_LIMITS["max_consecutive_fails"] == 10
     assert HARD_LIMITS["max_flat_after_pivot"] == 3
+    assert HARD_LIMITS["max_runtime_hours"] == 24
+
+
+def test_should_stop_runtime_limit():
+    """Stops when started_at timestamp exceeds max_runtime_hours."""
+    rows = [{"commit": "a", "phase": "plan", "feature": "-", "scores": "-",
+             "total": "-", "status": "keep", "summary": "spec"},
+            {"commit": "b", "phase": "build", "feature": "auth", "scores": "-",
+             "total": "-", "status": "keep", "summary": "build"}]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "results.tsv")
+        # Write results.tsv
+        with open(path, 'w') as f:
+            f.write('\t'.join(HEADER_FIELDS) + '\n')
+            for row in rows:
+                f.write('\t'.join(row.get(h, '') for h in HEADER_FIELDS) + '\n')
+        # Write started_at with a timestamp 25 hours ago
+        started_at = os.path.join(tmpdir, "started_at")
+        with open(started_at, 'w') as f:
+            f.write(str(time.time() - 25 * 3600))
+        stop, reason = should_stop(path, "auth")
+        assert stop is True
+        assert "Runtime limit" in reason
 
 
 def test_independent_evaluators():
