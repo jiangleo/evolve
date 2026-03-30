@@ -154,8 +154,49 @@ from prepare import load_adapter, load_eval_config
 - Create `.evolve/run.log` (empty)
 - Add `.evolve/` to `.gitignore`
 
+#### Completion Summary (MUST follow this format)
+
+After validation passes, O MUST present a detailed summary before asking user to start. Not a brief overview — full detail so user can make an informed decision.
+
+**Required sections:**
+
+1. **Feature list with order** — list every feature by name and execution sequence, not just count
+2. **Evaluation dimensions** — each dimension's name, type (deterministic/llm-judged), and threshold
+3. **Output target** — full file path(s) that will be created/modified
+4. **How the loop works** — B writes code → C calls independent evaluator (Codex) to score → fail means fix and retry → pass means next feature. Each round ~2-3 min.
+5. **Clickable file links** — provide paths to program.md and spec.md so user can open and review
+
+Example:
+
 ```
-Init complete. Run /loop 1m /evolve to start.
+✅ 验证通过，准备就绪。
+
+## 执行计划
+
+### Feature 列表（按顺序执行）
+1. JWT 用户认证 — 注册/登录/刷新 token
+2. 聊天接口 — WebSocket 实时消息
+3. 文件上传 — 大小/类型校验 + S3 存储
+
+### 评估维度
+| 维度 | 类型 | 门槛 |
+|------|------|------|
+| 测试通过率 | deterministic (vitest) | 7.0 |
+| 代码质量 | llm-judged (Codex) | 7.0 |
+| API 设计 | llm-judged (Codex) | 7.0 |
+
+### 产出文件
+→ src/routes/*.ts, src/middleware/auth.ts, ...
+
+### 循环机制
+每轮 ~2-3 分钟：B 写代码并 commit → C 调 Codex 独立评估 → 不及格自动修 → 及格进下一个。
+硬停止条件：总轮数 100 / 单 feature 30 轮 / 连续崩溃 5 次。
+
+### 查看详情
+- program.md: .evolve/program.md
+- spec.md: .evolve/spec.md
+
+启动命令：/loop 1m /evolve
 ```
 
 ---
