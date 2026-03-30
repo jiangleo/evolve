@@ -52,7 +52,7 @@ mkdir -p .claude/skills
 git clone https://github.com/jiangleo/evolve .claude/skills/evolve
 ```
 
-### 2. 初始化（交互式，约 5 分钟）
+### 2. 初始化 + 自动启动（交互式，约 5 分钟）
 
 在 Claude Code 里输入 `/evolve`，它会引导你完成配置：
 
@@ -61,21 +61,14 @@ Step 1  扫描项目              （自动）
 Step 2  头脑风暴              （3-5 个问题，帮你理清目标）
 Step 3  生成 program.md       （含功能列表 + 评估标准，你确认）
 Step 4  校验 + 创建分支        （自动）
+        ↓ 你确认后自动启动循环（无需手动输入 /loop）
 ```
 
-### 3. 启动自动循环（无人值守）
+AI 会逐个功能处理：构建 → 提交 → 评估 → 不过就修 → 过了就下一个。你可以走开。
 
-```
-/loop 1m /evolve
-```
+> 也可以手动启动：`/loop 1m /evolve`。没有 `/loop`？每次手动输入 `/evolve` 也行——会从文件自动恢复状态。
 
-> `/loop` 是另一个 Claude Code skill，按间隔重复运行斜杠命令。没有 `/loop`？每次手动输入 `/evolve` 也行——会从文件自动恢复状态。
-
-AI 会逐个功能处理：构建 → 提交 → 评估 → 不过就修 → 过了就下一个。
-
-你可以走开。回来看 `.evolve/report.md` 就知道进度。
-
-### 4. 查看进度
+### 3. 查看进度
 
 再次输入 `/evolve` 查看当前状态：
 

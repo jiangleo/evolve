@@ -52,7 +52,7 @@ mkdir -p .claude/skills
 git clone https://github.com/jiangleo/evolve .claude/skills/evolve
 ```
 
-### 2. Init (interactive, ~5 min)
+### 2. Init + Auto-Start (interactive, ~5 min)
 
 Type `/evolve` in Claude Code. It walks you through setup:
 
@@ -61,21 +61,14 @@ Step 1  Scans your project           (automatic)
 Step 2  Brainstorming                (3-5 questions, clarify your goal)
 Step 3  Generates program.md         (features + eval criteria, you confirm)
 Step 4  Validates + creates branch   (automatic)
+        ↓ After you confirm, loop starts automatically (no need to type /loop)
 ```
 
-### 3. Run the Loop (autonomous)
+The AI picks up features one by one: build, commit, evaluate, fix if needed, move on. You can walk away.
 
-```
-/loop 1m /evolve
-```
+> You can also start manually: `/loop 1m /evolve`. No `/loop`? Just type `/evolve` each time -- it recovers state from files automatically.
 
-> `/loop` is a separate skill that runs a command on a recurring interval. No `/loop`? Just type `/evolve` manually each time -- it recovers state from files automatically.
-
-The AI picks up features one by one: build, commit, evaluate, fix if needed, move on.
-
-You can walk away. Check `.evolve/report.md` when you're back.
-
-### 4. Check Progress
+### 3. Check Progress
 
 Type `/evolve` again to see where things stand:
 

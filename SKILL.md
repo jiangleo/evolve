@@ -248,8 +248,20 @@ Example:
 - program.md: .evolve/program.md
 - spec.md: .evolve/spec.md
 
-启动命令：/loop 1m /evolve
+确认启动？(Y/n)
 ```
+
+#### Auto-Start Loop
+
+After user confirms (or no objection), O **automatically** invokes `/loop 1m /evolve` via Skill tool. User does NOT need to type it manually.
+
+```
+User: Y (or just presses Enter)
+O: "正在启动自动循环..."
+-> O invokes Skill("loop", args="1m /evolve")
+```
+
+The user only needs to type `/evolve` once. Everything after confirmation is automatic.
 
 ---
 
