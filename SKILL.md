@@ -79,23 +79,45 @@ Q5: "Constraints?
 
 #### Skill Discovery
 
-After brainstorming, O scans installed skills and recommends additions based on project type:
+Claude Code built-in skills are always available, directly written into program.md. User's custom skills need to be discovered and confirmed.
 
-1. **Scan**: List all available skills (slash commands) in current environment
-2. **Recommend**: Based on project type, suggest skills that agents might need during the loop
-3. **Confirm**: Ask user which to include
+1. **Pre-fill**: Write Claude Code built-in skills into program.md (always available, no config needed)
+2. **Scan**: List user's custom installed skills in current environment
+3. **Recommend**: Based on project type, suggest which custom skills agents might need
+4. **Confirm**: Ask user which to include
 
 ```
-"当前已安装的 skills：
-  ✅ /evolve, /loop, /brainstorming, /qa, /browse
+"Claude Code 自带的 skills 我已经写进 program.md 了（/brainstorming 等）。
 
-  根据项目类型，建议补充：
-  A. /simplify → B 重构时用，降低代码复杂度
-  B. /tdd → B 写代码时用，测试驱动开发
-  C. 不需要额外 skills
+  你还安装了这些自定义 skills：
+  ✅ /qa, /browse, /tdd, /simplify
 
-  选好后我会写进 program.md，B 和 C 在循环中可以按需调用。"
+  根据项目类型，建议纳入：
+  A. /qa → C 评估时用，系统化测试
+  B. /browse → C 验收时用，检查页面效果
+  C. 全部纳入
+  D. 不需要额外 skills
+
+  选好后写进 program.md，B 和 C 在循环中按需调用。"
 ```
+
+#### Reference Documents
+
+Ask user if there are existing documents that agents should consult during the loop:
+
+```
+"有没有相关文档需要 AI 在过程中参考？比如：
+  - 设计文档 / PRD / 产品原型
+  - API 规范 / 接口文档
+  - 技术方案 / 架构设计
+  - 竞品分析 / 用户研究
+  - 其他参考资料
+
+  提供文件路径或 URL，我写进 program.md，B 和 C 需要时会自己去查。
+  没有的话直接跳过。"
+```
+
+Record paths/URLs in program.md `## Reference Documents`. Agents read these on-demand (not preloaded — just know where to look).
 
 ### Step 3: Generate program.md (automatic + user review)
 
@@ -124,11 +146,22 @@ dimensions:
 - Dependency limits: <from user>
 - No-go zones: <from user>
 
+## Reference Documents
+<!-- Paths or URLs that agents can consult during the loop. Read on-demand, not preloaded. -->
+- docs/design/api-spec.md — API 接口规范
+- docs/prd.md — 产品需求文档
+- https://example.com/design-system — 设计系统参考
+
 ## Available Skills
-<!-- O scans environment + user confirms during init. Agents call these as needed. -->
-- /qa → systematic testing, B calls during build, C calls during eval
+
+### Built-in (Claude Code default, always available)
+- /brainstorming → O uses during init for structured Q&A
+- /loop → schedule recurring prompt
+
+### Project Skills (user confirmed during init)
+<!-- O scans user's custom skills + user confirms. Agents call these as needed. -->
+- /qa → systematic testing, C calls during eval
 - /browse → live page inspection, C calls to verify UI
-- /simplify → reduce complexity, B calls during refactor
 
 ## Agent Rules
 - Do not modify program.md
