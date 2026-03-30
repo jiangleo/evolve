@@ -8,7 +8,8 @@ from prepare import (append_result, read_progress, HEADER_FIELDS,
                      load_eval_config, load_adapter,
                      analyze_trajectory, should_stop, validate_eval_result,
                      get_evaluator, HARD_LIMITS, INDEPENDENT_EVALUATORS,
-                     build_manifest, prepare_dispatch, _find_current_feature)
+                     build_manifest, prepare_dispatch, _find_current_feature,
+                     _parse_uncompleted_features)
 
 def test_append_result_creates_header():
     with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as f:
@@ -1045,3 +1046,34 @@ def test_build_manifest_haiku_fallback(tmp_path):
     manifest = build_manifest(str(tmp_path))
     assert "# Evolve Manifest" in manifest
     assert "## Summary" in manifest
+
+
+# ---------------------------------------------------------------------------
+# _parse_uncompleted_features tests
+# ---------------------------------------------------------------------------
+
+def test_parse_uncompleted_features(tmp_path):
+    """Parses spec.md and returns uncompleted features."""
+    (tmp_path / "spec.md").write_text(
+        "- [x] Auth — done\n"
+        "- [ ] Chat — pending\n"
+        "- [ ] Admin — pending\n"
+    )
+    result = _parse_uncompleted_features(str(tmp_path), {"Auth"})
+    assert result == ["Chat", "Admin"]
+
+
+def test_parse_uncompleted_features_no_spec(tmp_path):
+    """Returns empty list when spec.md missing."""
+    result = _parse_uncompleted_features(str(tmp_path), set())
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# prepare_dispatch validation tests
+# ---------------------------------------------------------------------------
+
+def test_prepare_dispatch_invalid_target(tmp_path):
+    """Rejects invalid target values."""
+    with pytest.raises(ValueError, match="Invalid dispatch target"):
+        prepare_dispatch(str(tmp_path), "X", ["program.md"])

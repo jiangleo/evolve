@@ -495,24 +495,32 @@ def generate_report(results_tsv: str) -> str:
 # Manifest (Haiku-powered summary for O's decision-making)
 # ---------------------------------------------------------------------------
 
+def _parse_uncompleted_features(evolve_dir: str, completed: set) -> list:
+    """Parse spec.md, return list of uncompleted feature names in order."""
+    spec_path = Path(evolve_dir) / "spec.md"
+    if not spec_path.exists():
+        return []
+
+    result = []
+    for line in spec_path.read_text().split("\n"):
+        line = line.strip()
+        if line.startswith("- [ ]"):
+            feat_name = line[5:].strip().split("—")[0].split("–")[0].strip()
+            if feat_name and feat_name not in completed:
+                result.append(feat_name)
+    return result
+
+
 def _find_current_feature(evolve_dir: str, progress: dict) -> str:
     """Find the first uncompleted feature from spec.md."""
     feature = progress.get("current_feature")
     if feature:
         return feature
 
-    spec_path = Path(evolve_dir) / "spec.md"
-    if not spec_path.exists():
-        return "unknown"
-
-    completed = set(progress.get("completed_features", []))
-    for line in spec_path.read_text().split("\n"):
-        line = line.strip()
-        if line.startswith("- [ ]"):
-            feat_name = line[5:].strip().split("—")[0].split("–")[0].strip()
-            if feat_name and feat_name not in completed:
-                return feat_name
-    return "unknown"
+    remaining = _parse_uncompleted_features(
+        evolve_dir, set(progress.get("completed_features", []))
+    )
+    return remaining[0] if remaining else "unknown"
 
 
 def _haiku_summarize(status_text: str, raw_files: dict) -> str:
@@ -535,7 +543,9 @@ def _haiku_summarize(status_text: str, raw_files: dict) -> str:
             )}],
         )
         return response.content[0].text
-    except Exception:
+    except Exception as e:
+        import sys as _sys
+        print(f"[manifest] Haiku fallback: {type(e).__name__}: {e}", file=_sys.stderr)
         # Deterministic fallback
         parts = []
         for name, content in raw_files.items():
@@ -558,16 +568,9 @@ def build_manifest(evolve_dir: str) -> str:
     stop, stop_reason = should_stop(results_tsv, feature)
 
     # Remaining features from spec.md
-    remaining = []
-    spec_path = evolve_path / "spec.md"
-    if spec_path.exists():
-        completed_set = set(progress.get("completed_features", []))
-        for line in spec_path.read_text().split("\n"):
-            line = line.strip()
-            if line.startswith("- [ ]"):
-                feat = line[5:].strip().split("—")[0].split("–")[0].strip()
-                if feat and feat not in completed_set:
-                    remaining.append(feat)
+    remaining = _parse_uncompleted_features(
+        evolve_dir, set(progress.get("completed_features", []))
+    )
 
     # Structured status
     status_lines = [
@@ -626,6 +629,9 @@ def prepare_dispatch(evolve_dir: str, target: str, file_list: list,
 
     Returns path to dispatch file.
     """
+    if target not in ("B", "C"):
+        raise ValueError(f"Invalid dispatch target: {target!r}. Must be 'B' or 'C'.")
+
     evolve_path = Path(evolve_dir)
     sections = [f"# Dispatch: {target}\n"]
 

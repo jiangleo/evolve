@@ -41,15 +41,10 @@ def main():
         skill_dir = project_dir
 
     sys.path.insert(0, str(skill_dir))
-    from prepare import build_manifest, acquire_lock
-
-    # Acquire lock
-    lock = acquire_lock(str(evolve_dir))
-    if not lock["acquired"]:
-        # Another session running — still update manifest (read-only operation)
-        pass
+    from prepare import build_manifest
 
     # Update manifest.md (Haiku summarizes current state)
+    # Hook does NOT acquire lock — that's O's job during dispatch
     build_manifest(str(evolve_dir))
 
     # No additionalContext injection — O reads manifest.md itself
