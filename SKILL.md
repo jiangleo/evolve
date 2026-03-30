@@ -252,13 +252,21 @@ Example:
 - program.md: .evolve/program.md
 - spec.md: .evolve/spec.md
 
+需要调整吗？(Y/n)
+```
+
+**Confirmation 1** = program.md content + execution plan. User reviews WHAT will be done.
+
+User confirms → O shows auto-start reminder:
+
+```
 ⚠️ 确认后将自动启动循环（每分钟一轮，最长 24 小时）。
-过程中你可以走开，AI 自动构建、评估、迭代。Ctrl+C 可停。
+过程中你可以走开，AI 自动构建、评估、迭代。Ctrl+C 随时可停。
 
 确认启动？(Y/n)
 ```
 
-**IMPORTANT:** This is the second and final confirmation (first was program.md). The auto-start reminder MUST be included in this confirmation — do NOT add a third confirmation step.
+**Confirmation 2** = start running. User confirms the ACTION.
 
 User confirms → O immediately invokes `Skill("loop", args="1m /evolve")`.
 
