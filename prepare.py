@@ -197,13 +197,16 @@ def should_stop(results_tsv: str, feature: str) -> tuple:
     progress = read_progress(results_tsv)
     trajectory = analyze_trajectory(results_tsv, feature)
 
-    # Time-based limit: use program.md mtime (created at init, never modified)
-    program_md = Path(results_tsv).parent / "program.md"
-    if program_md.exists():
-        started = os.path.getmtime(str(program_md))
-        elapsed_hours = (time.time() - started) / 3600
-        if elapsed_hours >= HARD_LIMITS["max_runtime_hours"]:
-            return True, f"Runtime limit reached ({HARD_LIMITS['max_runtime_hours']}h)"
+    # Time-based limit: check started_at file (written by first acquire_lock)
+    started_at_path = Path(results_tsv).parent / "started_at"
+    if started_at_path.exists():
+        try:
+            started = float(started_at_path.read_text().strip())
+            elapsed_hours = (time.time() - started) / 3600
+            if elapsed_hours >= HARD_LIMITS["max_runtime_hours"]:
+                return True, f"Runtime limit reached ({HARD_LIMITS['max_runtime_hours']}h)"
+        except (ValueError, OSError):
+            pass
 
     if progress["total_iterations"] >= HARD_LIMITS["max_rounds_total"]:
         return True, "Total round limit reached"
@@ -533,6 +536,12 @@ def acquire_lock(evolve_dir: str) -> dict:
     }
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text(json.dumps(lock_data))
+
+    # Write started_at on first-ever lock acquisition (loop start time)
+    started_at_path = lock_path.parent / "started_at"
+    if not started_at_path.exists():
+        started_at_path.write_text(str(lock_data["started"]))
+
     return {"acquired": True, "reason": None, "owner": lock_data}
 
 

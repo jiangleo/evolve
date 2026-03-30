@@ -798,7 +798,7 @@ def test_hard_limits_values():
 
 
 def test_should_stop_runtime_limit():
-    """Stops when program.md mtime exceeds max_runtime_hours."""
+    """Stops when started_at timestamp exceeds max_runtime_hours."""
     rows = [{"commit": "a", "phase": "plan", "feature": "-", "scores": "-",
              "total": "-", "status": "keep", "summary": "spec"},
             {"commit": "b", "phase": "build", "feature": "auth", "scores": "-",
@@ -809,15 +809,40 @@ def test_should_stop_runtime_limit():
             f.write('\t'.join(HEADER_FIELDS) + '\n')
             for row in rows:
                 f.write('\t'.join(row.get(h, '') for h in HEADER_FIELDS) + '\n')
-        # Create program.md with mtime 25 hours ago
-        program_md = os.path.join(tmpdir, "program.md")
-        with open(program_md, 'w') as f:
-            f.write("# Program\n")
-        old_time = time.time() - 25 * 3600
-        os.utime(program_md, (old_time, old_time))
+        # Write started_at with timestamp 25 hours ago
+        started_at = os.path.join(tmpdir, "started_at")
+        with open(started_at, 'w') as f:
+            f.write(str(time.time() - 25 * 3600))
         stop, reason = should_stop(path, "auth")
         assert stop is True
         assert "Runtime limit" in reason
+
+
+def test_acquire_lock_creates_started_at():
+    """First acquire_lock writes started_at file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = acquire_lock(tmpdir)
+        assert result["acquired"] is True
+        started_at = os.path.join(tmpdir, "started_at")
+        assert os.path.exists(started_at)
+        ts = float(open(started_at).read().strip())
+        assert time.time() - ts < 5  # created just now
+        release_lock(tmpdir)
+
+
+def test_acquire_lock_preserves_started_at():
+    """Subsequent acquire_lock does not overwrite started_at."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # First lock
+        acquire_lock(tmpdir)
+        started_at = os.path.join(tmpdir, "started_at")
+        original_ts = open(started_at).read().strip()
+        release_lock(tmpdir)
+        # Second lock
+        time.sleep(0.01)
+        acquire_lock(tmpdir)
+        assert open(started_at).read().strip() == original_ts
+        release_lock(tmpdir)
 
 
 def test_independent_evaluators():
