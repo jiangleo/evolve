@@ -7,7 +7,8 @@ from prepare import (append_result, read_progress, HEADER_FIELDS,
                      generate_report, acquire_lock, update_lock, release_lock,
                      load_eval_config, load_adapter,
                      analyze_trajectory, should_stop, validate_eval_result,
-                     get_evaluator, HARD_LIMITS, INDEPENDENT_EVALUATORS)
+                     get_evaluator, HARD_LIMITS, INDEPENDENT_EVALUATORS,
+                     build_manifest, prepare_dispatch, _find_current_feature)
 
 def test_append_result_creates_header():
     with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as f:
@@ -856,3 +857,191 @@ def test_independent_evaluators_priority_order():
     """INDEPENDENT_EVALUATORS has codex first, claude second per V2 design."""
     assert INDEPENDENT_EVALUATORS[0] == "codex"
     assert INDEPENDENT_EVALUATORS[1] == "claude"
+
+
+# ---------------------------------------------------------------------------
+# _find_current_feature tests
+# ---------------------------------------------------------------------------
+
+def test_find_current_feature_from_progress(tmp_path):
+    """Uses current_feature from progress if available."""
+    progress = {"current_feature": "auth", "completed_features": []}
+    result = _find_current_feature(str(tmp_path), progress)
+    assert result == "auth"
+
+
+def test_find_current_feature_from_spec(tmp_path):
+    """Falls back to first uncompleted feature in spec.md."""
+    (tmp_path / "spec.md").write_text(
+        "- [x] File Upload — done\n"
+        "- [ ] JWT Auth — pending\n"
+        "- [ ] Admin Panel — pending\n"
+    )
+    progress = {"current_feature": None, "completed_features": ["File Upload"]}
+    result = _find_current_feature(str(tmp_path), progress)
+    assert result == "JWT Auth"
+
+
+def test_find_current_feature_all_completed(tmp_path):
+    """Returns 'unknown' when all features completed."""
+    (tmp_path / "spec.md").write_text("- [x] Auth — done\n")
+    progress = {"current_feature": None, "completed_features": ["Auth"]}
+    result = _find_current_feature(str(tmp_path), progress)
+    assert result == "unknown"
+
+
+def test_find_current_feature_no_spec(tmp_path):
+    """Returns 'unknown' when spec.md doesn't exist."""
+    progress = {"current_feature": None, "completed_features": []}
+    result = _find_current_feature(str(tmp_path), progress)
+    assert result == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# prepare_dispatch tests
+# ---------------------------------------------------------------------------
+
+def test_prepare_dispatch_basic(tmp_path):
+    """Assembles dispatch file from file list."""
+    (tmp_path / "program.md").write_text("# Goals\nBuild a chat app")
+    (tmp_path / "strategy.md").write_text("Continue: fix error handling")
+
+    path = prepare_dispatch(str(tmp_path), "B", ["program.md", "strategy.md"])
+    assert path == str(tmp_path / "dispatch_B.md")
+
+    content = (tmp_path / "dispatch_B.md").read_text()
+    assert "# Dispatch: B" in content
+    assert "## program.md" in content
+    assert "Build a chat app" in content
+    assert "## strategy.md" in content
+    assert "fix error handling" in content
+
+
+def test_prepare_dispatch_with_note(tmp_path):
+    """Includes O's note in dispatch file."""
+    (tmp_path / "program.md").write_text("# Goals")
+
+    prepare_dispatch(str(tmp_path), "C", ["program.md"],
+                     note="trend is flat, consider pivot")
+
+    content = (tmp_path / "dispatch_C.md").read_text()
+    assert "## Note from O" in content
+    assert "trend is flat" in content
+
+
+def test_prepare_dispatch_missing_file(tmp_path):
+    """Handles missing files gracefully."""
+    (tmp_path / "program.md").write_text("# Goals")
+
+    prepare_dispatch(str(tmp_path), "B", ["program.md", "nonexistent.md"])
+
+    content = (tmp_path / "dispatch_B.md").read_text()
+    assert "## program.md" in content
+    assert "## nonexistent.md" in content
+    assert "(file not found)" in content
+
+
+def test_prepare_dispatch_truncates_results_tsv(tmp_path):
+    """Truncates results.tsv to header + last 20 lines."""
+    header = "\t".join(HEADER_FIELDS)
+    lines = [header] + [f"c{i}\tbuild\tauth\t-\t-\tkeep\tbuild {i}" for i in range(30)]
+    (tmp_path / "results.tsv").write_text("\n".join(lines))
+
+    prepare_dispatch(str(tmp_path), "B", ["results.tsv"])
+
+    content = (tmp_path / "dispatch_B.md").read_text()
+    # Should have header + last 20 lines = 21 lines in the results section
+    results_section = content.split("## results.tsv\n")[1].strip()
+    result_lines = [l for l in results_section.split("\n") if l.strip()]
+    assert len(result_lines) == 21  # header + 20 data lines
+
+
+def test_prepare_dispatch_truncates_run_log(tmp_path):
+    """Truncates run.log to last 50 lines."""
+    lines = [f"[2024-01-01] log line {i}" for i in range(100)]
+    (tmp_path / "run.log").write_text("\n".join(lines))
+
+    prepare_dispatch(str(tmp_path), "B", ["run.log"])
+
+    content = (tmp_path / "dispatch_B.md").read_text()
+    log_section = content.split("## run.log\n")[1].strip()
+    log_lines = [l for l in log_section.split("\n") if l.strip()]
+    assert len(log_lines) == 50
+
+
+def test_prepare_dispatch_target_c(tmp_path):
+    """Creates dispatch_C.md for target C."""
+    (tmp_path / "eval.yml").write_text("dimensions:\n  - name: Quality")
+
+    path = prepare_dispatch(str(tmp_path), "C", ["eval.yml"])
+    assert path == str(tmp_path / "dispatch_C.md")
+    assert (tmp_path / "dispatch_C.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# build_manifest tests
+# ---------------------------------------------------------------------------
+
+def test_build_manifest_creates_file(tmp_path):
+    """build_manifest writes manifest.md."""
+    # Minimal setup: results.tsv with one row
+    tsv = tmp_path / "results.tsv"
+    tsv.write_text(
+        "\t".join(HEADER_FIELDS) + "\n"
+        "a1b\tplan\t-\t-\t-\tkeep\tspec\n"
+    )
+    (tmp_path / "spec.md").write_text("- [ ] Auth — login system\n")
+
+    # Mock started_at to avoid runtime limit issues
+    (tmp_path / "started_at").write_text(str(time.time()))
+
+    manifest = build_manifest(str(tmp_path))
+
+    assert (tmp_path / "manifest.md").exists()
+    assert "# Evolve Manifest" in manifest
+    assert "## Status" in manifest
+    assert "phase:" in manifest
+    assert "feature:" in manifest
+    assert "should_stop:" in manifest
+
+
+def test_build_manifest_structured_status(tmp_path):
+    """Manifest contains correct structured status data."""
+    tsv = tmp_path / "results.tsv"
+    header = "\t".join(HEADER_FIELDS)
+    tsv.write_text(
+        f"{header}\n"
+        "a1b\tplan\t-\t-\t-\tkeep\tspec\n"
+        "b2c\tbuild\tauth\t-\t-\tkeep\tbuild\n"
+        "c3d\teval\tauth\t8/9\t8.5\tpass\tpass\n"
+        "d4e\tbuild\tchat\t-\t-\tkeep\tbuild chat\n"
+    )
+    (tmp_path / "spec.md").write_text(
+        "- [ ] auth — login\n"
+        "- [ ] chat — messaging\n"
+    )
+    (tmp_path / "started_at").write_text(str(time.time()))
+
+    manifest = build_manifest(str(tmp_path))
+
+    assert "round: 4" in manifest
+    assert "phase: eval" in manifest  # build/keep -> eval
+    assert "chat" in manifest
+    assert "completed: ['auth']" in manifest
+    assert "should_stop: no" in manifest
+
+
+def test_build_manifest_haiku_fallback(tmp_path):
+    """Manifest works even if Haiku API fails (deterministic fallback)."""
+    tsv = tmp_path / "results.tsv"
+    tsv.write_text(
+        "\t".join(HEADER_FIELDS) + "\n"
+        "a1b\tplan\t-\t-\t-\tkeep\tspec\n"
+    )
+    (tmp_path / "spec.md").write_text("- [ ] Auth\n")
+    (tmp_path / "started_at").write_text(str(time.time()))
+
+    # Even without API key / network, should produce a valid manifest
+    manifest = build_manifest(str(tmp_path))
+    assert "# Evolve Manifest" in manifest
+    assert "## Summary" in manifest

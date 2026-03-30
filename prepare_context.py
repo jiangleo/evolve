@@ -3,8 +3,8 @@
 UserPromptSubmit hook for Evolve.
 
 Called by Claude Code BEFORE AI processes the prompt.
-If prompt contains "/evolve", computes full dispatch context and injects it.
-Otherwise exits silently.
+If prompt contains "/evolve" and .evolve/ exists, updates manifest.md via Haiku.
+O reads manifest.md to decide dispatch — Hook does NOT inject dispatch decisions.
 
 Install: add to .claude/settings.json hooks.UserPromptSubmit
 """
@@ -41,69 +41,18 @@ def main():
         skill_dir = project_dir
 
     sys.path.insert(0, str(skill_dir))
-    from prepare import prepare_context
+    from prepare import build_manifest, acquire_lock
 
-    # Compute full context
-    ctx = prepare_context(str(evolve_dir))
+    # Acquire lock
+    lock = acquire_lock(str(evolve_dir))
+    if not lock["acquired"]:
+        # Another session running — still update manifest (read-only operation)
+        pass
 
-    # Format as readable text for AI
-    lines = ["=== EVOLVE DISPATCH ==="]
-    lines.append(f"action: {ctx['action']}")
+    # Update manifest.md (Haiku summarizes current state)
+    build_manifest(str(evolve_dir))
 
-    if ctx["action"] == "not_evolve":
-        lines.append("No .evolve/ directory. Run /evolve to initialize.")
-        _output(lines)
-        return
-
-    if ctx["action"] == "report_only":
-        lines.append(f"reason: {ctx['reason']}")
-        lines.append("")
-        lines.append(ctx["report"])
-        _output(lines)
-        return
-
-    if ctx["action"] == "stop":
-        lines.append(f"reason: {ctx['reason']}")
-        lines.append("")
-        lines.append(ctx["report"])
-        _output(lines)
-        return
-
-    # dispatch_B or dispatch_C
-    lines.append(f"phase: {ctx['phase']}")
-    lines.append(f"feature: {ctx['feature']}")
-
-    progress = ctx.get("progress", {})
-    completed = progress.get("completed_features", [])
-    total_iter = progress.get("total_iterations", 0)
-    lines.append(f"round: {total_iter}")
-    lines.append(f"completed: {completed}")
-
-    trajectory = ctx.get("trajectory", {})
-    if trajectory:
-        lines.append(f"trajectory: {trajectory.get('trend', '?')} (latest={trajectory.get('latest', 0)})")
-
-    lines.append("")
-
-    # Inject file contents
-    for name, content in ctx.get("files", {}).items():
-        lines.append(f"=== {name} ===")
-        lines.append(content)
-        lines.append("")
-
-    _output(lines)
-
-
-def _output(lines):
-    """Output as additionalContext JSON."""
-    text = "\n".join(lines)
-    result = {
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": text,
-        }
-    }
-    print(json.dumps(result))
+    # No additionalContext injection — O reads manifest.md itself
     sys.exit(0)
 
 

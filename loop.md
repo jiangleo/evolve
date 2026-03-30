@@ -1,6 +1,6 @@
-# Evolve Loop V2: O → B → C → B → C → ... → Done
+# Evolve Loop V3: O decides, code executes
 
-This file is loaded after Init (SKILL.md) completes. The Agent reads this file during the autonomous loop.
+This file is loaded after Init (SKILL.md) completes. O reads this during the autonomous loop.
 
 Designed for use with `/loop 1m /evolve` -- each round is a new session that recovers context from files.
 
@@ -12,115 +12,86 @@ Each time `/evolve` is triggered and `.evolve/results.tsv` exists, enter this lo
 
 ### 0. Concurrency Lock
 
-```python
-import sys
-sys.path.insert(0, '.claude/skills/evolve')
-from prepare import acquire_lock, update_lock, release_lock
-
-lock = acquire_lock(".evolve")
-if not lock["acquired"]:
-    # Still show progress even when another session is running
-    -> Progress Report (see below), then stop immediately
-```
+Hook already acquired the lock via `acquire_lock()`. If another session is running, Hook still updates manifest but O should check lock state.
 
 Call `update_lock(".evolve", phase, feature)` at every major step.
 Call `release_lock(".evolve")` when done.
 Lock auto-expires after 2 minutes if session crashes.
 
-### 1. should_stop() Gate
-
-**Before any AI work**, check code-enforced stop conditions:
-
-```python
-from prepare import read_progress, should_stop
-
-progress = read_progress(".evolve/results.tsv")
-feature = progress.get("current_feature") or "<first unfinished>"
-
-stop, reason = should_stop(".evolve/results.tsv", feature)
-if stop:
-    print(f"⛔ {feature} stopped by code after {progress['total_iterations']} rounds")
-    print(f"   Reason: {reason}")
-    print(f"   Action needed: adjust program.md / lower threshold / provide hints")
-    print(f"   Re-run /evolve to continue.")
-    release_lock(".evolve")
-    -> stop immediately
-```
-
-AI does not participate in this decision.
-
 ---
 
-## Per-Round Reading List
+## O's Dispatch Flow
 
-New session -- before making any decisions, **read in order**:
+Hook has already updated `.evolve/manifest.md` (Haiku-generated summary).
 
-| # | File | How | Purpose |
-|---|------|-----|---------|
-| 1 | `.evolve/program.md` | Full text | User goals, constraints, V2 design reference |
-| 2 | `.evolve/spec.md` | Full text | Feature list and acceptance criteria |
-| 3 | `.evolve/eval.yml` | Full text | Evaluation dimensions and thresholds |
-| 4 | `.evolve/results.tsv` | Last 10 lines | Current progress |
-| 5 | `.evolve/strategy.md` | Full text (if exists) | C's previous strategic decisions |
-| 6 | git log --oneline -3 | Command | What changed recently |
+### 1. Read manifest.md
+
+One file. Contains structured status + Haiku summary. Enough to decide.
 
 ```python
-from prepare import read_progress, load_eval_config, load_adapter
-
-progress = read_progress(".evolve/results.tsv")
-dimensions = load_eval_config(".evolve/eval.yml")
-adapter = load_adapter(".evolve/adapter.py")
+# Just read the file — no tool calls, no extra computation
+manifest = Path(".evolve/manifest.md").read_text()
 ```
 
----
+### 2. Check hard stops
 
-## State Machine (V2)
+If `should_stop: yes` in manifest → stop immediately, report to user.
 
-```
-build/keep       → dispatch C (evaluate the build)
-build/crash      → dispatch B (fix)
-eval/pass        → dispatch B (next feature; C resets strategy.md)
-eval/fail        → dispatch B (C already updated strategy.md with decision)
-All features pass → Done
-```
+### 3. Decide dispatch
 
-No contract phase. No skip status. Stuck = code stops the loop via should_stop().
+O reads the manifest and decides:
+- **Who to dispatch**: B or C (based on phase + situation)
+- **What files to include**: O picks the files that agent needs
+- **Optional note**: one-line instruction if O sees something worth flagging
 
-### Routing
+O does NOT re-read original files. Manifest has everything O needs to decide.
 
-`read_progress()` returns the NEXT phase to execute:
-
-| Last results.tsv row | read_progress phase | Dispatch |
-|---------------------|---------------------|----------|
-| build/keep | eval | C (evaluate the build) |
-| build/crash | build | B (fix the crash) |
-| eval/pass | build | B (next feature) |
-| eval/fail | build | B (C already wrote strategy.md) |
+### 4. Call prepare_dispatch
 
 ```python
-if progress["phase"] == "build":
-    # Check if all features completed
-    # Read spec.md to extract spec_features
-    # if all spec_features in progress["completed_features"] -> Done Flow
-    -> Build Flow (dispatch B)
+import sys
+sys.path.insert(0, '.claude/skills/evolve')
+from prepare import prepare_dispatch
 
-elif progress["phase"] == "eval":
-    -> Eval Flow (dispatch C)
+# O decides what to give B
+path = prepare_dispatch(".evolve", "B",
+    ["program.md", "strategy.md", "spec.md", "results.tsv"],
+    note="crash 3 times on same error, check run.log")
+
+# Or for C
+path = prepare_dispatch(".evolve", "C",
+    ["program.md", "strategy.md", "eval.yml", "spec.md", "results.tsv"],
+    note="trend is flat, consider pivot")
 ```
+
+Code reads those files, writes `dispatch_B.md` or `dispatch_C.md`. O doesn't touch the payload.
+
+### 5. Dispatch subagent
+
+```python
+# O spawns Agent with one-line prompt pointing to dispatch file
+Agent(prompt="You are B. Read .evolve/dispatch_B.md for your full context and instructions.")
+```
+
+B/C reads the dispatch file, then works independently. If B/C needs more context (run.log, git log, source files), it reads them itself — it has full tool access.
+
+### 6. After subagent completes
+
+Next round's Hook will update manifest.md automatically. O just reads it again.
 
 ---
 
 ## Build Flow (B Agent)
 
-O dispatches B subagent. B reads program.md + strategy.md.
+O dispatches B subagent. B reads dispatch_B.md.
 
 ### Feature Selection
 
-Read `.evolve/spec.md`, find the first feature not in `progress["completed_features"]`, in order.
+Read `.evolve/spec.md`, find the first feature not in completed list, in order.
 
 ### New Feature (after eval/pass)
 
-B starts fresh on the next feature. No sprint contract needed (V2 removed contracts).
+B starts fresh on the next feature.
 
 ### Fix Round (after eval/fail)
 
@@ -182,7 +153,7 @@ append_result(".evolve/results.tsv", {
 
 ## Eval Flow (C Agent)
 
-O dispatches C subagent. C evaluates the build and makes strategic decisions.
+O dispatches C subagent. C reads dispatch_C.md.
 
 ### Environment Setup
 
@@ -302,11 +273,7 @@ Output report to user, stop the loop.
 1. **One-liner first** — the `📍` line above. This is what the user scans.
 2. **File link** — always include `.evolve/report.md` path so user can click for details.
 3. **Update report.md** — call `generate_report()` and write to `.evolve/report.md` before outputting the summary.
-4. **Lock-not-acquired case** — read results.tsv (read-only, no lock needed), show progress, note another session is running:
-   ```
-   📍 Round 14 | Feature: 文件上传 | Phase: build (另一个 session 正在执行)
-      Passed: 2/3 features | Latest score: 7.2 | Details: .evolve/report.md
-   ```
+4. **Lock-not-acquired case** — read manifest.md (read-only), show progress, note another session is running.
 5. **Keep it short** — 1-2 lines max. No lengthy explanations.
 
 ---
@@ -325,7 +292,7 @@ Output report to user, stop the loop.
 
 ---
 
-## File Permission Matrix (V2)
+## File Permission Matrix
 
 | File | O | B | C |
 |------|---|---|---|
@@ -335,4 +302,6 @@ Output report to user, stop the loop.
 | strategy.md | - | read-only | read/write |
 | results.tsv | read | append | append |
 | run.log | append | append | append |
+| manifest.md | read | - | - |
+| dispatch_*.md | write (via code) | read | read |
 | Project code | - | read/write | read-only |

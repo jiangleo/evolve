@@ -492,11 +492,179 @@ def generate_report(results_tsv: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Context Preparation (called by UserPromptSubmit hook)
+# Manifest (Haiku-powered summary for O's decision-making)
+# ---------------------------------------------------------------------------
+
+def _find_current_feature(evolve_dir: str, progress: dict) -> str:
+    """Find the first uncompleted feature from spec.md."""
+    feature = progress.get("current_feature")
+    if feature:
+        return feature
+
+    spec_path = Path(evolve_dir) / "spec.md"
+    if not spec_path.exists():
+        return "unknown"
+
+    completed = set(progress.get("completed_features", []))
+    for line in spec_path.read_text().split("\n"):
+        line = line.strip()
+        if line.startswith("- [ ]"):
+            feat_name = line[5:].strip().split("—")[0].split("–")[0].strip()
+            if feat_name and feat_name not in completed:
+                return feat_name
+    return "unknown"
+
+
+def _haiku_summarize(status_text: str, raw_files: dict) -> str:
+    """Call Haiku for intelligent summary. Falls back to deterministic."""
+    try:
+        import anthropic
+        client = anthropic.Anthropic(timeout=8.0)
+
+        files_text = ""
+        for name, content in raw_files.items():
+            files_text += f"\n--- {name} ---\n{content}\n"
+
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            messages=[{"role": "user", "content": (
+                "Summarize this evolve run state for the orchestrator to decide next dispatch.\n\n"
+                f"Status:\n{status_text}\n\nFiles:\n{files_text}\n\n"
+                "Write 3-5 lines: what happened, key issues, what the next agent needs. Be concise."
+            )}],
+        )
+        return response.content[0].text
+    except Exception:
+        # Deterministic fallback
+        parts = []
+        for name, content in raw_files.items():
+            first = content.strip().split('\n')[0][:100] if content.strip() else "(empty)"
+            parts.append(f"- {name}: {first}")
+        return "\n".join(parts) if parts else "(no summary available)"
+
+
+def build_manifest(evolve_dir: str) -> str:
+    """
+    Generate manifest.md: structured status + Haiku summary.
+    Called by Hook before O runs. O reads manifest to decide dispatch.
+    """
+    evolve_path = Path(evolve_dir)
+    results_tsv = str(evolve_path / "results.tsv")
+
+    progress = read_progress(results_tsv)
+    feature = _find_current_feature(evolve_dir, progress)
+    trajectory = analyze_trajectory(results_tsv, feature)
+    stop, stop_reason = should_stop(results_tsv, feature)
+
+    # Remaining features from spec.md
+    remaining = []
+    spec_path = evolve_path / "spec.md"
+    if spec_path.exists():
+        completed_set = set(progress.get("completed_features", []))
+        for line in spec_path.read_text().split("\n"):
+            line = line.strip()
+            if line.startswith("- [ ]"):
+                feat = line[5:].strip().split("—")[0].split("–")[0].strip()
+                if feat and feat not in completed_set:
+                    remaining.append(feat)
+
+    # Structured status
+    status_lines = [
+        f"round: {progress['total_iterations']}",
+        f"phase: {progress['phase']}",
+        f"feature: {feature}",
+        f"feature_round: {progress.get('feature_iterations', 0)}",
+        f"trajectory: {trajectory['trend']} (latest={trajectory['latest']})",
+        f"consecutive_fails: {progress['consecutive_fails']}",
+        f"consecutive_crashes: {progress['consecutive_crashes']}",
+        f"completed: {progress.get('completed_features', [])}",
+        f"remaining: {remaining}",
+        f"should_stop: {'yes — ' + stop_reason if stop else 'no'}",
+    ]
+    status_text = "\n".join(status_lines)
+
+    # Gather raw text for Haiku
+    raw_files = {}
+    for name in ["strategy.md"]:
+        p = evolve_path / name
+        if p.exists():
+            content = p.read_text()
+            if len(content) > 2000:
+                content = content[-2000:]
+            raw_files[name] = content
+
+    # results.tsv last 10 lines
+    tsv_path = evolve_path / "results.tsv"
+    if tsv_path.exists():
+        lines = tsv_path.read_text().strip().split("\n")
+        raw_files["results.tsv (recent)"] = "\n".join(lines[-10:])
+
+    # run.log last 30 lines
+    log_path = evolve_path / "run.log"
+    if log_path.exists():
+        log_lines = log_path.read_text().strip().split("\n")
+        raw_files["run.log (tail)"] = "\n".join(log_lines[-30:])
+
+    # Call Haiku
+    summary = _haiku_summarize(status_text, raw_files)
+
+    manifest = f"# Evolve Manifest\n\n## Status\n{status_text}\n\n## Summary\n{summary}\n"
+    (evolve_path / "manifest.md").write_text(manifest)
+    return manifest
+
+
+def prepare_dispatch(evolve_dir: str, target: str, file_list: list,
+                     note: str = "") -> str:
+    """
+    Assemble dispatch file for target agent from O's file list.
+    Pure file I/O — O decides what to include, this function just reads and writes.
+
+    target: "B" | "C"
+    file_list: filenames relative to evolve_dir (e.g. ["program.md", "strategy.md"])
+    note: optional instruction from O (appended as a section)
+
+    Returns path to dispatch file.
+    """
+    evolve_path = Path(evolve_dir)
+    sections = [f"# Dispatch: {target}\n"]
+
+    if note:
+        sections.append(f"## Note from O\n{note}\n")
+
+    for filename in file_list:
+        filepath = evolve_path / filename
+        if not filepath.exists():
+            sections.append(f"## {filename}\n(file not found)\n")
+            continue
+
+        content = filepath.read_text()
+
+        # Smart truncation for known large files
+        if filename == "results.tsv":
+            lines = content.strip().split("\n")
+            if len(lines) > 21:
+                content = "\n".join(lines[:1] + lines[-20:])
+        elif filename == "run.log":
+            lines = content.strip().split("\n")
+            if len(lines) > 50:
+                content = "\n".join(lines[-50:])
+
+        sections.append(f"## {filename}\n{content}\n")
+
+    dispatch_path = evolve_path / f"dispatch_{target}.md"
+    dispatch_path.write_text("\n".join(sections))
+    return str(dispatch_path)
+
+
+# ---------------------------------------------------------------------------
+# Context Preparation (DEPRECATED — use build_manifest + prepare_dispatch)
 # ---------------------------------------------------------------------------
 
 def prepare_context(evolve_dir: str) -> dict:
     """
+    DEPRECATED: Use build_manifest() + prepare_dispatch() instead.
+
     One-shot context preparation. Called by hook BEFORE AI starts.
     Returns everything O needs to dispatch — AI makes zero tool calls for setup.
 

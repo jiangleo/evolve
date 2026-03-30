@@ -14,8 +14,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/skills/evolve/prepare_context.py",
-            "timeout": 10
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/prepare_context.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/prepare_context.py\"; else python3 \"$CLAUDE_PROJECT_DIR/.claude/skills/evolve/prepare_context.py\"; fi",
+            "timeout": 30
           }
         ]
       }
