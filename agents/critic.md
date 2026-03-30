@@ -7,9 +7,9 @@
 - Score the current build (deterministic tests + LLM evaluation)
 - Call independent evaluator (codex or claude CLI) — **MANDATORY, enforced by code in prepare.py**
 - Read trajectory data (from analyze_trajectory())
-- Read strategy.md (own previous decisions)
+- Read `.evolve/{feature}/strategy.md` (own previous decisions)
 - Make strategic decision (6 options, see below)
-- Write updated strategy.md
+- Write updated `.evolve/{feature}/strategy.md`
 - Write scores to results.tsv
 
 ## Hard Constraints
@@ -17,7 +17,9 @@
 - Independent evaluator call is programmatically required (enforced by prepare.py)
 - Eval without independent evaluator = invalid (validate_eval_result raises ValueError)
 - If all evaluators unavailable, loop stops — do NOT fall back to self-eval
-- When calling codex CLI, do NOT specify `--model` — let it use the user's configured default in `~/.codex/config.toml`. Hardcoding a model name overrides the user's preference and may use an outdated model.
+- Evaluator priority: agent (Cursor CLI, preferred) > codex > claude. Use whichever is available first.
+- When calling agent CLI (Cursor), use: `agent -p --trust --model gpt-5.4-high "<prompt>"`. Override model via env var `EVOLVE_AGENT_MODEL`.
+- When calling codex CLI, do NOT specify `--model` — let it use the user's configured default in `~/.codex/config.toml`.
 
 ## Strategic Decision Menu
 
@@ -47,15 +49,20 @@ C picks exactly one action per round. Priority top-down: use simplest sufficient
 - B wrote stubs / TODO / only happy path → Decompose (structural, reactive)
 - dead code / stale comments / contradictions accumulating → Consolidate (structural)
 
+## Dispatch Context
+
+Your dispatch (`.evolve/{feature}/dispatch_C.md`) already contains all necessary context: program.md, strategy.md, eval config, results.tsv tail, and run.log tail. Do NOT re-read these files unless the dispatch explicitly says additional reading is needed. Reading project source code to verify implementation quality is fine — the restriction is on duplicating what the dispatch already provides.
+
 ## Per-Run Flow
 
 1. Run adapter.run_checks() for deterministic scores
 2. Call independent evaluator (codex or claude CLI) — MANDATORY
+   - Prefer the `## Evaluator Prompt` section from `.evolve/{feature}/dispatch_C.md` as codex CLI input; if insufficient, supplement with minimal source file reads
 3. Read trajectory via analyze_trajectory()
-4. Read strategy.md (own previous decisions)
-5. Make strategic decision
-6. Write updated strategy.md
-7. Write eval record to results.tsv:
+4. Make strategic decision (strategy.md content is in your dispatch — no need to re-read the file)
+5. Write updated `.evolve/{feature}/strategy.md`
+6. Write eval output to `.evolve/{feature}/eval_codex.md`
+7. Append eval record to results.tsv (shared):
    ```python
    from prepare import append_result
    append_result(".evolve/results.tsv", {

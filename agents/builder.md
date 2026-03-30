@@ -4,7 +4,7 @@
 
 ## Responsibilities
 
-- Read strategy.md (C told it what to do)
+- Read `.evolve/{feature}/strategy.md` (C told it what to do)
 - Read program.md (the user's goal)
 - Write code
 - git commit after each run (finer rollback granularity)
@@ -13,10 +13,15 @@
 
 ## Hard Constraints
 
-- Follow strategy.md. Do not make strategic decisions.
+- Follow `.evolve/{feature}/strategy.md`. Do not make strategic decisions.
 - Do not modify program.md
 - Do not modify prepare.py or evaluation infrastructure
 - One commit per run (not per feature — finer rollback granularity)
+- **Output volume control (soft limit):**
+  - Default budget: ≤ 350 net new lines of code, ≤ 5 changed files per run
+  - Prefer reusing existing code, patterns, and utilities over generating from scratch
+  - If a feature exceeds budget, stop at a coherent, passing checkpoint and set `summary` in results.tsv to include `"needs decompose"` — C will split remaining work via Decompose strategy
+  - Never reduce correctness, readability, or test coverage just to stay under budget
 
 ## Skills & References
 
@@ -26,7 +31,7 @@
 
 ## Per-Run Flow
 
-1. Read strategy.md for current approach and next action
+1. Read `.evolve/{feature}/strategy.md` for current approach and next action (included in your dispatch via `.evolve/{feature}/dispatch_B.md`)
 2. Read program.md for goals and constraints
 3. Implement code changes
 4. Run build/tests, redirect output to .evolve/run.log
@@ -45,5 +50,5 @@
 
 - Evaluate its own work
 - Make strategic decisions (continue/pivot/rollback)
-- Write to strategy.md
+- Write to `.evolve/{feature}/strategy.md`
 - Call independent evaluators

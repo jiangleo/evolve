@@ -6,33 +6,42 @@
 
 ## Responsibilities
 
-- Read raw files (results.tsv, strategy.md, run.log, spec.md) → write `.evolve/manifest.md`
+- Read raw files (results.tsv, `{feature}/strategy.md`, run.log, spec.md) → write `.evolve/manifest.md`
 - Analyze feature dependencies ("F07 references F02 Canvas Card specs")
 - Locate content sections in large documents (grep for headings, find line ranges)
-- Call `prepare_dispatch()` to assemble dispatch files with precisely scoped context
+- Call `prepare_dispatch()` to assemble per-feature dispatch files with precisely scoped context
+- Prepare dispatch files for multiple features in parallel
 - Other lightweight preprocessing O needs before dispatching B/C
 
 ## Per-Run Flow
 
 O dispatches H with a task like: "Prep context for B on feature F07."
 
-1. Read `.evolve/results.tsv`, `.evolve/strategy.md`, `.evolve/run.log` (tails)
-2. Write `.evolve/manifest.md` — structured status + brief summary
+1. Read `.evolve/results.tsv`, `.evolve/{feature}/strategy.md`, `.evolve/run.log` (tails)
+2. Write `.evolve/manifest.md` — structured status + brief summary (global view across all features)
 3. Analyze current feature's dependencies:
    - What other features does it reference?
    - What shared specs or rules apply?
    - What sections of large documents are relevant?
 4. Locate exact line ranges (grep headings in large docs)
-5. Call `prepare_dispatch()` with the right file list:
+5. Call `prepare_dispatch()` with the right file list and `feature=` parameter:
    ```python
    from prepare import prepare_dispatch
    prepare_dispatch(".evolve", "B", [
        "program.md",
-       "strategy.md",
-       "product-experience-design.md:4759-5695",   # F07 main section
+       "F07 Pattern Mirror/strategy.md",
+       "product-experience-design.md#F07 Pattern Mirror",
        "product-experience-design.md:953-969",      # F02 Card specs (dependency)
-   ], note="F07 references F02 Canvas Card C/D for layout")
+   ], note="F07 references F02 Canvas Card C/D for layout",
+      feature="F07 Pattern Mirror")
    ```
+   This writes to `.evolve/F07 Pattern Mirror/dispatch_B.md` (per-feature dispatch).
+6. When preparing `dispatch_C.md` (via `feature=` parameter → `.evolve/{feature}/dispatch_C.md`), include a `## Evaluator Prompt` section containing:
+   - Design requirements for the feature under evaluation (extract relevant section from program.md or design docs)
+   - Scoring dimensions and thresholds (extract from eval config)
+   - Latest build output summary (extract from run.log tail)
+
+   C uses this section directly as codex/claude CLI input — no re-assembly needed.
 
 ## What H Does NOT Do
 

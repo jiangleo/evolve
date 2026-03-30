@@ -33,9 +33,10 @@ HARD_LIMITS = {
     "max_runtime_hours": 24,
 }
 
-INDEPENDENT_EVALUATORS = ["codex", "claude"]
+INDEPENDENT_EVALUATORS = ["agent", "codex", "claude"]
 
 HAIKU_MODEL = os.environ.get("EVOLVE_HAIKU_MODEL", "claude-haiku-4-5-20251001")
+AGENT_MODEL = os.environ.get("EVOLVE_AGENT_MODEL", "gpt-5.4-high")
 
 REQUIRED_ADAPTER_FUNCTIONS = ["setup", "run_checks", "teardown"]
 
@@ -558,7 +559,7 @@ def _haiku_summarize(status_text: str, raw_files: dict) -> str:
 
 def build_manifest(evolve_dir: str) -> str:
     """
-    Generate manifest.md: structured status + Haiku summary.
+    Generate manifest.md: structured status + parallel feature state + Haiku summary.
     Called by Hook before O runs. O reads manifest to decide dispatch.
     """
     evolve_path = Path(evolve_dir)
@@ -574,6 +575,13 @@ def build_manifest(evolve_dir: str) -> str:
         evolve_dir, set(progress.get("completed_features", []))
     )
 
+    # Parallel feature scan
+    features = scan_all_features(evolve_dir)
+
+    # Build lock status
+    bl = acquire_build_lock(evolve_dir)
+    build_lock_status = "free" if bl["acquired"] else f"locked ({bl['reason']})"
+
     # Structured status
     status_lines = [
         f"round: {progress['total_iterations']}",
@@ -585,19 +593,39 @@ def build_manifest(evolve_dir: str) -> str:
         f"consecutive_crashes: {progress['consecutive_crashes']}",
         f"completed: {progress.get('completed_features', [])}",
         f"remaining: {remaining}",
+        f"build_lock: {build_lock_status}",
         f"should_stop: {'yes — ' + stop_reason if stop else 'no'}",
     ]
     status_text = "\n".join(status_lines)
 
+    # Feature states for parallel dispatch
+    feat_lines = []
+    for f in features:
+        agent = f" [{f['in_progress']}]" if f["in_progress"] else ""
+        feat_lines.append(
+            f"  {f['name']}: {f['state']}{agent} "
+            f"(evals={f['eval_count']}, fails={f['consecutive_fails']})"
+        )
+    feature_state_text = "\n".join(feat_lines) if feat_lines else "  (no features)"
+
     # Gather raw text for Haiku
     raw_files = {}
-    for name in ["strategy.md"]:
-        p = evolve_path / name
-        if p.exists():
-            content = p.read_text()
-            if len(content) > 2000:
-                content = content[-2000:]
-            raw_files[name] = content
+    # Read per-feature strategy files
+    for f in features:
+        if f["state"] not in ("completed", "not_started"):
+            strat_path = evolve_path / f["name"] / "strategy.md"
+            if strat_path.exists():
+                content = strat_path.read_text()
+                if len(content) > 1000:
+                    content = content[-1000:]
+                raw_files[f"strategy({f['name']})"] = content
+    # Fallback: legacy strategy.md at root
+    legacy_strat = evolve_path / "strategy.md"
+    if legacy_strat.exists() and not raw_files:
+        content = legacy_strat.read_text()
+        if len(content) > 2000:
+            content = content[-2000:]
+        raw_files["strategy.md"] = content
 
     # results.tsv last 10 lines
     tsv_path = evolve_path / "results.tsv"
@@ -614,7 +642,12 @@ def build_manifest(evolve_dir: str) -> str:
     # Call Haiku
     summary = _haiku_summarize(status_text, raw_files)
 
-    manifest = f"# Evolve Manifest\n\n## Status\n{status_text}\n\n## Summary\n{summary}\n"
+    manifest = (
+        f"# Evolve Manifest\n\n"
+        f"## Status\n{status_text}\n\n"
+        f"## Feature States\n{feature_state_text}\n\n"
+        f"## Summary\n{summary}\n"
+    )
     (evolve_path / "manifest.md").write_text(manifest)
     return manifest
 
@@ -690,7 +723,7 @@ def _extract_section(content: str, section_name: str) -> str:
 
 
 def prepare_dispatch(evolve_dir: str, target: str, file_list: list,
-                     note: str = "") -> str:
+                     note: str = "", feature: str = None) -> str:
     """
     Assemble dispatch file for target agent from O's file list.
     Pure file I/O — O decides what to include, this function just reads and writes.
@@ -698,6 +731,7 @@ def prepare_dispatch(evolve_dir: str, target: str, file_list: list,
     target: "B" | "C"
     file_list: filenames relative to evolve_dir (e.g. ["program.md", "strategy.md"])
     note: optional instruction from O (appended as a section)
+    feature: if set, dispatch file is written to evolve_dir/{feature}/dispatch_{target}.md
 
     Returns path to dispatch file.
     """
@@ -705,6 +739,15 @@ def prepare_dispatch(evolve_dir: str, target: str, file_list: list,
         raise ValueError(f"Invalid dispatch target: {target!r}. Must be 'B' or 'C'.")
 
     evolve_path = Path(evolve_dir)
+
+    if feature:
+        if ".." in feature or feature.startswith("/"):
+            raise ValueError(f"Invalid feature name: {feature!r}")
+        output_dir = evolve_path / feature
+        output_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        output_dir = evolve_path
+
     sections = [f"# Dispatch: {target}\n"]
 
     if note:
@@ -734,7 +777,7 @@ def prepare_dispatch(evolve_dir: str, target: str, file_list: list,
 
         sections.append(f"## {file_spec}\n{content}\n")
 
-    dispatch_path = evolve_path / f"dispatch_{target}.md"
+    dispatch_path = output_dir / f"dispatch_{target}.md"
     dispatch_path.write_text("\n".join(sections))
     return str(dispatch_path)
 
@@ -863,6 +906,280 @@ def prepare_context(evolve_dir: str) -> dict:
         "files": files,
         "report": generate_report(results_tsv),
     }
+
+
+# ---------------------------------------------------------------------------
+# Parallel Feature Scanning
+# ---------------------------------------------------------------------------
+
+def scan_all_features(evolve_dir: str) -> list[dict]:
+    """
+    Parse spec.md and results.tsv to determine each feature's dispatch readiness.
+
+    Returns list of dicts (in spec.md order):
+        name:             feature name from spec.md
+        state:            "not_started" | "needs_build" | "needs_eval" | "completed"
+        in_progress:      None | "B" | "C" (from per-feature lock file)
+        last_status:      last results.tsv status for this feature, or None
+        eval_count:       number of eval rows for this feature
+        consecutive_fails: consecutive eval fails (reset on pass or build/keep)
+    """
+    evolve_path = Path(evolve_dir)
+    results_tsv = str(evolve_path / "results.tsv")
+
+    # Parse all features from spec.md (only unchecked items)
+    all_features = []
+    spec_path = evolve_path / "spec.md"
+    if spec_path.exists():
+        for line in spec_path.read_text().split("\n"):
+            line = line.strip()
+            if line.startswith("- [ ]"):
+                feat_name = line[5:].strip().split("—")[0].split("–")[0].strip()
+                if feat_name:
+                    all_features.append(feat_name)
+
+    # Parse results.tsv for per-feature state
+    rows = []
+    tsv_path = Path(results_tsv)
+    if tsv_path.exists() and tsv_path.stat().st_size > 0:
+        with open(tsv_path, newline="") as f:
+            rows = list(csv.DictReader(f, delimiter="\t"))
+
+    # Build per-feature info
+    feature_rows = {}
+    for row in rows:
+        feat = row.get("feature", "-")
+        if feat != "-":
+            feature_rows.setdefault(feat, []).append(row)
+
+    result = []
+    for feat_name in all_features:
+        feat_data = feature_rows.get(feat_name, [])
+        info = {
+            "name": feat_name,
+            "state": "not_started",
+            "in_progress": None,
+            "last_status": None,
+            "eval_count": 0,
+            "consecutive_fails": 0,
+        }
+
+        if feat_data:
+            last = feat_data[-1]
+            last_phase = last.get("phase", "")
+            last_status = last.get("status", "")
+            info["last_status"] = last_status
+            info["eval_count"] = sum(
+                1 for r in feat_data if r.get("phase") == "eval"
+            )
+
+            # Count consecutive fails
+            for r in reversed(feat_data):
+                if r.get("phase") == "eval" and r.get("status") == "fail":
+                    info["consecutive_fails"] += 1
+                elif r.get("phase") == "eval" and r.get("status") == "pass":
+                    break
+                elif r.get("phase") == "build" and r.get("status") == "keep":
+                    break
+
+            # Determine state
+            if last_phase == "eval" and last_status == "pass":
+                info["state"] = "completed"
+            elif last_phase == "build" and last_status == "keep":
+                info["state"] = "needs_eval"
+            elif last_phase == "build" and last_status == "crash":
+                info["state"] = "needs_build"
+            elif last_phase == "eval" and last_status == "fail":
+                info["state"] = "needs_build"
+            else:
+                info["state"] = "needs_build"
+
+        # Check per-feature lock
+        feat_lock = evolve_path / feat_name / "lock"
+        if feat_lock.exists():
+            try:
+                lock_data = json.loads(feat_lock.read_text())
+                elapsed = time.time() - lock_data.get("heartbeat", 0)
+                if elapsed < LOCK_STALE_SECONDS:
+                    info["in_progress"] = lock_data.get("agent", "?")
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        result.append(info)
+
+    return result
+
+
+def _generate_lock_token() -> str:
+    """Generate a random token for lock ownership verification."""
+    import random
+    return f"{os.getpid()}-{random.randint(100000, 999999)}-{time.time()}"
+
+
+def acquire_build_lock(evolve_dir: str) -> dict:
+    """
+    Acquire the global B-exclusive lock. Only one B agent can run at a time.
+    Uses atomic file creation (O_CREAT | O_EXCL) to prevent TOCTOU races.
+
+    Returns {"acquired": True/False, "reason": ..., "feature": ..., "token": ...}.
+    """
+    lock_path = Path(evolve_dir) / "build_lock"
+
+    # Check if existing lock is stale
+    if lock_path.exists():
+        try:
+            data = json.loads(lock_path.read_text())
+            elapsed = time.time() - data.get("heartbeat", 0)
+            if elapsed < LOCK_STALE_SECONDS:
+                return {
+                    "acquired": False,
+                    "reason": f"B agent active on {data.get('feature', '?')} "
+                              f"({int(elapsed)}s ago)",
+                    "feature": data.get("feature"),
+                    "token": None,
+                }
+            # Stale — remove and try atomic create
+            lock_path.unlink(missing_ok=True)
+        except (json.JSONDecodeError, OSError):
+            lock_path.unlink(missing_ok=True)
+
+    # Atomic creation
+    token = _generate_lock_token()
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, json.dumps({
+            "pid": os.getpid(),
+            "token": token,
+            "heartbeat": time.time(),
+        }).encode())
+        os.close(fd)
+        return {"acquired": True, "reason": None, "feature": None, "token": token}
+    except FileExistsError:
+        # Another process won the race
+        return {
+            "acquired": False,
+            "reason": "Lost lock race to another process",
+            "feature": None,
+            "token": None,
+        }
+
+
+def release_build_lock(evolve_dir: str, token: str = None) -> None:
+    """Release the global B-exclusive lock. Verifies ownership via token if provided."""
+    lock_path = Path(evolve_dir) / "build_lock"
+    if not lock_path.exists():
+        return
+    if token:
+        try:
+            data = json.loads(lock_path.read_text())
+            if data.get("token") != token:
+                return  # Not our lock, don't delete
+        except (json.JSONDecodeError, OSError):
+            pass
+    try:
+        lock_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def acquire_feature_lock(evolve_dir: str, feature: str, agent: str) -> dict:
+    """
+    Acquire per-feature lock for B or C agent.
+    Uses atomic file creation to prevent TOCTOU races.
+
+    Also acquires global build_lock if agent is "B".
+    Returns {"acquired": True/False, "reason": ..., "token": ...}.
+    """
+    # Sanitize feature name to prevent path traversal
+    if ".." in feature or feature.startswith("/"):
+        return {"acquired": False, "reason": f"Invalid feature name: {feature!r}",
+                "token": None}
+
+    build_token = None
+    if agent == "B":
+        bl = acquire_build_lock(evolve_dir)
+        if not bl["acquired"]:
+            return {"acquired": False, "reason": bl["reason"], "token": None}
+        build_token = bl["token"]
+        # Update build_lock with feature info
+        lock_path = Path(evolve_dir) / "build_lock"
+        try:
+            data = json.loads(lock_path.read_text())
+            data["feature"] = feature
+            lock_path.write_text(json.dumps(data))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    feat_dir = Path(evolve_dir) / feature
+    feat_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = feat_dir / "lock"
+
+    # Check for stale feature lock
+    if lock_path.exists():
+        try:
+            data = json.loads(lock_path.read_text())
+            elapsed = time.time() - data.get("heartbeat", 0)
+            if elapsed < LOCK_STALE_SECONDS:
+                if build_token:
+                    release_build_lock(evolve_dir, build_token)
+                return {
+                    "acquired": False,
+                    "reason": f"{data.get('agent', '?')} active on {feature}",
+                    "token": None,
+                }
+            lock_path.unlink(missing_ok=True)
+        except (json.JSONDecodeError, OSError):
+            lock_path.unlink(missing_ok=True)
+
+    # Atomic creation
+    token = _generate_lock_token()
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, json.dumps({
+            "pid": os.getpid(),
+            "token": token,
+            "build_token": build_token,
+            "agent": agent,
+            "feature": feature,
+            "heartbeat": time.time(),
+        }).encode())
+        os.close(fd)
+        return {"acquired": True, "reason": None, "token": token}
+    except FileExistsError:
+        if build_token:
+            release_build_lock(evolve_dir, build_token)
+        return {
+            "acquired": False,
+            "reason": f"Lost feature lock race on {feature}",
+            "token": None,
+        }
+
+
+def release_feature_lock(evolve_dir: str, feature: str, token: str = None) -> None:
+    """
+    Release per-feature lock. Verifies ownership via token if provided.
+    Also releases build_lock if this was a B agent (using stored build_token).
+    """
+    feat_lock = Path(evolve_dir) / feature / "lock"
+    if not feat_lock.exists():
+        return
+
+    build_token = None
+    try:
+        data = json.loads(feat_lock.read_text())
+        if token and data.get("token") != token:
+            return  # Not our lock
+        build_token = data.get("build_token")
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    try:
+        feat_lock.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    if build_token:
+        release_build_lock(evolve_dir, build_token)
 
 
 # ---------------------------------------------------------------------------

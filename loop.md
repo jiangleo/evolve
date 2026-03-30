@@ -17,7 +17,13 @@ O acquires the lock at the start of each round:
 ```python
 import sys
 sys.path.insert(0, '.claude/skills/evolve')
-from prepare import acquire_lock, update_lock, release_lock
+from prepare import (
+    acquire_lock, update_lock, release_lock,
+    scan_all_features,
+    acquire_build_lock, release_build_lock,
+    acquire_feature_lock, release_feature_lock,
+    prepare_dispatch,
+)
 
 lock = acquire_lock(".evolve")
 if not lock["acquired"]:
@@ -29,25 +35,46 @@ Call `update_lock(".evolve", phase, feature)` at every major step.
 Call `release_lock(".evolve")` when done.
 Lock auto-expires after 2 minutes if session crashes.
 
+**Per-feature locks** (used by O when dispatching B/C):
+- `acquire_feature_lock(".evolve", "F01", "B")` — acquires build_lock + feature lock (B exclusive)
+- `acquire_feature_lock(".evolve", "F02", "C")` — acquires feature lock only (C parallel)
+- `release_feature_lock(".evolve", "F01", "B")` — releases feature lock + build_lock
+- `release_feature_lock(".evolve", "F02", "C")` — releases feature lock only
+
 ---
 
 ## O's Dispatch Flow
 
-### 1. Dispatch H (Haiku) for prep
+O runs a **parallel pipeline** each round. Multiple agents can run concurrently as long as concurrency rules are respected (see Concurrency Rules below).
 
-O's first action each round: spawn H to do all prep work.
+### 1. Scan feature states
 
 ```python
-# O spawns H with Haiku model — cheap, fast
-Agent(prompt="You are H. Prep this round's context. Read agents/helper.md for instructions.",
-      model="haiku")
+features = scan_all_features(".evolve")
+# Returns: [{"name": "F01", "state": "needs_eval"|"needs_build"|"completed"|"not_started",
+#            "in_progress": None|"B"|"C", "last_status": ..., "eval_count": ...,
+#            "consecutive_fails": ...}]
+```
+
+### 2. Dispatch H (Haiku) for prep — parallel
+
+O spawns H agents for every feature that needs prep. Multiple H agents can run simultaneously.
+
+```python
+# Identify features that need prep
+needs_prep = [f for f in features if f["state"] in ("needs_build", "needs_eval", "not_started")
+              and f["in_progress"] is None]
+
+for feat in needs_prep:
+    Agent(prompt=f"You are H. Prep context for {feat['name']}. Read agents/helper.md for instructions.",
+          model="haiku", run_in_background=True)
 ```
 
 H does:
-1. Reads raw files → writes `.evolve/manifest.md` (structured status + summary)
+1. Reads raw files → writes `.evolve/manifest.md` (structured status + summary, includes Feature States section)
 2. Analyzes feature dependencies (which sections does the current feature need?)
 3. Locates exact line ranges in large documents (grep for headings)
-4. Calls `prepare_dispatch()` to assemble `dispatch_B.md` or `dispatch_C.md`
+4. Calls `prepare_dispatch()` with `feature=` parameter to assemble per-feature dispatch files
 
 H uses file specs to scope context precisely:
 ```python
@@ -56,10 +83,11 @@ from prepare import prepare_dispatch
 # Example: F07 needs its own section + F02 Card specs as reference
 prepare_dispatch(".evolve", "B", [
     "program.md",
-    "strategy.md",
+    "{feature}/strategy.md",
     "product-experience-design.md#F07 Pattern Mirror",    # only F07 section
     "product-experience-design.md#F02 Canvas",             # only F02 Canvas section
-], note="F07 references F02 Canvas Card C/D for layout")
+], note="F07 references F02 Canvas Card C/D for layout", feature="F07 Pattern Mirror")
+# Writes to: .evolve/F07 Pattern Mirror/dispatch_B.md
 ```
 
 Supported file spec formats:
@@ -68,37 +96,76 @@ Supported file spec formats:
 - `"file.md#Section Name"` — heading-based section extraction
 - `"file.md:42"` — single line
 
-### 2. O reads manifest, decides
+### 3. O reads manifest, decides parallel dispatch
 
-After H finishes, O reads `.evolve/manifest.md` (one file, enough to decide):
+After H agents finish, O reads `.evolve/manifest.md` (one file, enough to decide):
 
 - `should_stop: yes` → stop immediately, report to user
-- Confirm H's dispatch prep looks right
-- Dispatch B or C
+- Read Feature States section to determine what to dispatch
 
 O does NOT re-read original files. H already prepped everything.
 
-### 3. Dispatch B or C
+**Dispatch decision logic:**
 
 ```python
-Agent(prompt="You are B. Read .evolve/dispatch_B.md for your full context and instructions.")
+features = scan_all_features(".evolve")
+
+eval_ready  = [f for f in features if f["state"] == "needs_eval" and f["in_progress"] is None]
+build_ready = [f for f in features if f["state"] == "needs_build" and f["in_progress"] is None]
+start_ready = [f for f in features if f["state"] == "not_started" and f["in_progress"] is None]
+# start_ready: filter further by dependency — only those whose dependencies are "completed"
 ```
 
-B/C reads the dispatch file, then works independently. If B/C needs more context (run.log, git log, source files), it reads them itself — it has full tool access.
+### 4. Dispatch C — parallel
 
-### 4. After subagent completes
+All features that need eval can be dispatched simultaneously. C agents are read-only on code.
 
-Next round's Hook will update manifest.md automatically. O just reads it again.
+```python
+for feat in eval_ready:
+    acquire_feature_lock(".evolve", feat["name"], "C")
+    Agent(prompt=f"You are C. Read .evolve/{feat['name']}/dispatch_C.md for your full context.",
+          run_in_background=True)
+```
+
+### 5. Dispatch B — exclusive
+
+Only one B agent at a time (git constraint). Pick the first needs_build feature with build_lock free.
+
+```python
+if build_ready:
+    feat = build_ready[0]
+    lock_ok = acquire_feature_lock(".evolve", feat["name"], "B")  # acquires build_lock + feature lock
+    if lock_ok:
+        Agent(prompt=f"You are B. Read .evolve/{feat['name']}/dispatch_B.md for your full context.")
+```
+
+**Pipeline overlap is allowed:** B(F02) and C(F01) can run concurrently since C is read-only on code.
+
+### 6. Dispatch H for not_started features — parallel
+
+Features whose dependencies are all completed can be prepped by H.
+
+```python
+for feat in start_ready:
+    Agent(prompt=f"You are H. Prep context for {feat['name']}. Read agents/helper.md for instructions.",
+          model="haiku", run_in_background=True)
+```
+
+### 7. After subagent completes
+
+- B agent: `release_feature_lock(".evolve", feat, "B")` (releases build_lock + feature lock)
+- C agent: `release_feature_lock(".evolve", feat, "C")` (releases feature lock only)
+- Next round's Hook will update manifest.md automatically. O just reads it again.
 
 ---
 
 ## Build Flow (B Agent)
 
-O dispatches B subagent. B reads dispatch_B.md.
+O dispatches B subagent. B reads `.evolve/{feature}/dispatch_B.md`.
 
 ### Feature Selection
 
-Read `.evolve/spec.md`, find the first feature not in completed list, in order.
+The feature is determined by O's dispatch logic (see O's Dispatch Flow above). The dispatch file specifies the target feature.
 
 ### New Feature (after eval/pass)
 
@@ -106,7 +173,7 @@ B starts fresh on the next feature.
 
 ### Fix Round (after eval/fail)
 
-B reads `.evolve/strategy.md` which C already updated with the strategic decision:
+B reads `.evolve/{feature}/strategy.md` which C already updated with the strategic decision:
 - Continue → keep current approach, fix specific issues
 - Pivot → new technical approach described in strategy.md
 - Rollback → revert to specified commit, restart
@@ -164,7 +231,7 @@ append_result(".evolve/results.tsv", {
 
 ## Eval Flow (C Agent)
 
-O dispatches C subagent. C reads dispatch_C.md.
+O dispatches C subagent. C reads `.evolve/{feature}/dispatch_C.md`.
 
 ### Environment Setup
 
@@ -184,20 +251,27 @@ deterministic_scores = check_result["scores"]
 
 ### Independent Evaluator (MANDATORY)
 
+`{feature}/dispatch_C.md` contains a pre-assembled `## Evaluator Prompt` section (built by H). C should use it directly as codex/claude CLI input instead of re-extracting from source files.
+
 C must call an independent evaluator. Enforced by prepare.py:
 
 ```python
 from prepare import get_evaluator, validate_eval_result
 
-evaluator = get_evaluator()  # returns "codex", "claude", or None
+evaluator = get_evaluator()  # returns "agent", "codex", "claude", or None
 if evaluator is None:
     # Cannot proceed without independent evaluator
     -> stop loop, report to user
 ```
 
 Invoke the evaluator CLI to score `type: llm-judged` dimensions.
-**Do NOT specify `--model` when calling codex** — let it use the user's configured default.
-Eval output written to `.evolve/eval_codex.md` (or `.evolve/eval_claude.md`).
+
+**Evaluator-specific flags:**
+- `agent` (Cursor CLI): use `agent -p --trust --model gpt-5.4-high "<prompt>"` (override via `EVOLVE_AGENT_MODEL` env var)
+- `codex`: do NOT specify `--model` — let it use the user's configured default
+- `claude`: no special flags needed
+
+Eval output written to `.evolve/{feature}/eval_{evaluator}.md`.
 
 ### Score Aggregation
 
@@ -226,9 +300,9 @@ trajectory = analyze_trajectory(".evolve/results.tsv", feature)
 # Returns: {"trend": "rising"|"flat"|"falling"|"insufficient", ...}
 ```
 
-C reads trajectory + strategy.md + eval results, then picks one action from the 6-option menu (see agents/critic.md).
+C reads trajectory + `{feature}/strategy.md` + eval results, then picks one action from the 6-option menu (see agents/critic.md).
 
-Writes updated `.evolve/strategy.md`.
+Writes updated `.evolve/{feature}/strategy.md`.
 
 ### Record Result
 
@@ -290,6 +364,17 @@ Output report to user, stop the loop.
 
 ---
 
+## Concurrency Rules
+
+1. **B exclusive**: Only one B agent at a time (enforced by build_lock)
+2. **C parallel**: Multiple C agents can run simultaneously on different features
+3. **H parallel**: Multiple H agents can prep simultaneously
+4. **Pipeline overlap**: B(F02) + C(F01) can run concurrently
+5. **State isolation**: Each feature has its own `.evolve/{feature}/` subdirectory
+6. **Shared files**: results.tsv, run.log, program.md, eval.yml are shared (append-only or read-only)
+
+---
+
 ## Agent Rules
 
 1. **Do not modify program.md** -- contract between human and agent
@@ -306,14 +391,24 @@ Output report to user, stop the loop.
 
 ## File Permission Matrix
 
+**Shared files** (in `.evolve/` root):
+
 | File | O | H | B | C |
 |------|---|---|---|---|
 | program.md | read-only | read | read-only | read-only |
 | eval.yml | read-only | read | read-only | read-only |
+| spec.md | read-only | read | read-only | read-only |
 | adapter.py | read-only | - | read-only | read-only |
-| strategy.md | - | read | read-only | read/write |
 | results.tsv | read | read | append | append |
 | run.log | - | read (tail) | append | append |
 | manifest.md | read | write | - | - |
-| dispatch_*.md | - | write (via code) | read | read |
 | Project code | - | read-only | read/write | read-only |
+
+**Per-feature files** (in `.evolve/{feature}/`):
+
+| File | O | H | B | C |
+|------|---|---|---|---|
+| strategy.md | - | read | read-only | read/write |
+| dispatch_B.md | - | write (via code) | read | - |
+| dispatch_C.md | - | write (via code) | - | read |
+| eval_codex.md | - | - | - | write |

@@ -10,7 +10,9 @@ from prepare import (append_result, read_progress, HEADER_FIELDS,
                      get_evaluator, HARD_LIMITS, INDEPENDENT_EVALUATORS,
                      build_manifest, prepare_dispatch, _find_current_feature,
                      _parse_uncompleted_features,
-                     _parse_file_spec, _extract_section)
+                     _parse_file_spec, _extract_section,
+                     scan_all_features, acquire_build_lock, release_build_lock,
+                     acquire_feature_lock, release_feature_lock)
 
 def test_append_result_creates_header():
     with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as f:
@@ -856,9 +858,10 @@ def test_independent_evaluators():
 
 
 def test_independent_evaluators_priority_order():
-    """INDEPENDENT_EVALUATORS has codex first, claude second per V2 design."""
-    assert INDEPENDENT_EVALUATORS[0] == "codex"
-    assert INDEPENDENT_EVALUATORS[1] == "claude"
+    """INDEPENDENT_EVALUATORS has agent first, then codex, then claude."""
+    assert INDEPENDENT_EVALUATORS[0] == "agent"
+    assert INDEPENDENT_EVALUATORS[1] == "codex"
+    assert INDEPENDENT_EVALUATORS[2] == "claude"
 
 
 # ---------------------------------------------------------------------------
@@ -1271,3 +1274,226 @@ def test_parse_file_spec_empty_range():
     name, slicer = _parse_file_spec("file.md:")
     assert name == "file.md:"
     assert slicer is None
+
+
+# ---------------------------------------------------------------------------
+# scan_all_features
+# ---------------------------------------------------------------------------
+
+def test_scan_all_features_empty(tmp_path):
+    """No spec.md, no results -> empty list."""
+    assert scan_all_features(str(tmp_path)) == []
+
+
+def test_scan_all_features_not_started(tmp_path):
+    (tmp_path / "spec.md").write_text("- [ ] F01\n- [ ] F02\n")
+    _make_tsv_at(tmp_path, [])
+    result = scan_all_features(str(tmp_path))
+    assert len(result) == 2
+    assert result[0]["name"] == "F01"
+    assert result[0]["state"] == "not_started"
+    assert result[1]["name"] == "F02"
+    assert result[1]["state"] == "not_started"
+
+
+def test_scan_all_features_mixed_states(tmp_path):
+    (tmp_path / "spec.md").write_text("- [ ] F01\n- [ ] F02\n- [ ] F03\n")
+    rows = [
+        {"commit": "a1", "phase": "build", "feature": "F01",
+         "scores": "-", "total": "-", "status": "keep", "summary": "built"},
+        {"commit": "a2", "phase": "eval", "feature": "F01",
+         "scores": "8", "total": "8", "status": "pass", "summary": "pass"},
+        {"commit": "a3", "phase": "build", "feature": "F02",
+         "scores": "-", "total": "-", "status": "keep", "summary": "built"},
+    ]
+    _make_tsv_at(tmp_path, rows)
+    result = scan_all_features(str(tmp_path))
+    assert result[0]["state"] == "completed"
+    assert result[1]["state"] == "needs_eval"
+    assert result[2]["state"] == "not_started"
+
+
+def test_scan_all_features_fail_state(tmp_path):
+    (tmp_path / "spec.md").write_text("- [ ] F01\n")
+    rows = [
+        {"commit": "a1", "phase": "build", "feature": "F01",
+         "scores": "-", "total": "-", "status": "keep", "summary": "built"},
+        {"commit": "a2", "phase": "eval", "feature": "F01",
+         "scores": "5", "total": "5", "status": "fail", "summary": "low"},
+    ]
+    _make_tsv_at(tmp_path, rows)
+    result = scan_all_features(str(tmp_path))
+    assert result[0]["state"] == "needs_build"
+    assert result[0]["consecutive_fails"] == 1
+
+
+def test_scan_all_features_in_progress(tmp_path):
+    (tmp_path / "spec.md").write_text("- [ ] F01\n")
+    _make_tsv_at(tmp_path, [])
+    feat_dir = tmp_path / "F01"
+    feat_dir.mkdir()
+    (feat_dir / "lock").write_text(json.dumps({
+        "agent": "C", "heartbeat": time.time(), "feature": "F01"
+    }))
+    result = scan_all_features(str(tmp_path))
+    assert result[0]["in_progress"] == "C"
+
+
+def test_scan_all_features_stale_lock(tmp_path):
+    (tmp_path / "spec.md").write_text("- [ ] F01\n")
+    _make_tsv_at(tmp_path, [])
+    feat_dir = tmp_path / "F01"
+    feat_dir.mkdir()
+    (feat_dir / "lock").write_text(json.dumps({
+        "agent": "B", "heartbeat": time.time() - 300, "feature": "F01"
+    }))
+    result = scan_all_features(str(tmp_path))
+    assert result[0]["in_progress"] is None
+
+
+# ---------------------------------------------------------------------------
+# Build lock
+# ---------------------------------------------------------------------------
+
+def test_acquire_build_lock_fresh(tmp_path):
+    result = acquire_build_lock(str(tmp_path))
+    assert result["acquired"] is True
+    assert result["token"] is not None
+    assert (tmp_path / "build_lock").exists()
+
+
+def test_acquire_build_lock_blocked(tmp_path):
+    (tmp_path / "build_lock").write_text(json.dumps({
+        "pid": 12345, "feature": "F01", "token": "other",
+        "heartbeat": time.time()
+    }))
+    result = acquire_build_lock(str(tmp_path))
+    assert result["acquired"] is False
+    assert "F01" in result["reason"]
+
+
+def test_acquire_build_lock_stale(tmp_path):
+    (tmp_path / "build_lock").write_text(json.dumps({
+        "pid": 12345, "feature": "F01", "token": "old",
+        "heartbeat": time.time() - 300
+    }))
+    result = acquire_build_lock(str(tmp_path))
+    assert result["acquired"] is True
+
+
+def test_release_build_lock_with_token(tmp_path):
+    result = acquire_build_lock(str(tmp_path))
+    assert (tmp_path / "build_lock").exists()
+    release_build_lock(str(tmp_path), result["token"])
+    assert not (tmp_path / "build_lock").exists()
+
+
+def test_release_build_lock_wrong_token(tmp_path):
+    """Release with wrong token should NOT delete the lock."""
+    result = acquire_build_lock(str(tmp_path))
+    release_build_lock(str(tmp_path), "wrong-token")
+    assert (tmp_path / "build_lock").exists()  # Lock preserved
+
+
+# ---------------------------------------------------------------------------
+# Feature lock
+# ---------------------------------------------------------------------------
+
+def test_acquire_feature_lock_c(tmp_path):
+    result = acquire_feature_lock(str(tmp_path), "F01", "C")
+    assert result["acquired"] is True
+    assert result["token"] is not None
+    assert (tmp_path / "F01" / "lock").exists()
+
+
+def test_acquire_feature_lock_b_acquires_build_lock(tmp_path):
+    result = acquire_feature_lock(str(tmp_path), "F01", "B")
+    assert result["acquired"] is True
+    assert (tmp_path / "build_lock").exists()
+    assert (tmp_path / "F01" / "lock").exists()
+
+
+def test_acquire_feature_lock_b_blocked_by_build_lock(tmp_path):
+    (tmp_path / "build_lock").write_text(json.dumps({
+        "pid": 12345, "feature": "F02", "token": "other",
+        "heartbeat": time.time()
+    }))
+    result = acquire_feature_lock(str(tmp_path), "F01", "B")
+    assert result["acquired"] is False
+
+
+def test_acquire_feature_lock_path_traversal(tmp_path):
+    result = acquire_feature_lock(str(tmp_path), "../escape", "C")
+    assert result["acquired"] is False
+    assert "Invalid" in result["reason"]
+
+
+def test_release_feature_lock_b_releases_build_lock(tmp_path):
+    result = acquire_feature_lock(str(tmp_path), "F01", "B")
+    assert (tmp_path / "build_lock").exists()
+    release_feature_lock(str(tmp_path), "F01", result["token"])
+    assert not (tmp_path / "F01" / "lock").exists()
+    assert not (tmp_path / "build_lock").exists()
+
+
+def test_release_feature_lock_wrong_token(tmp_path):
+    """Release with wrong token should NOT delete the lock."""
+    acquire_feature_lock(str(tmp_path), "F01", "B")
+    release_feature_lock(str(tmp_path), "F01", "wrong-token")
+    assert (tmp_path / "F01" / "lock").exists()  # Lock preserved
+    assert (tmp_path / "build_lock").exists()     # Build lock preserved
+
+
+def test_release_feature_lock_c_keeps_build_lock(tmp_path):
+    # Simulate B holding build lock on F02, C releasing F01
+    (tmp_path / "build_lock").write_text(json.dumps({
+        "pid": 12345, "feature": "F02", "token": "b-token",
+        "heartbeat": time.time()
+    }))
+    result = acquire_feature_lock(str(tmp_path), "F01", "C")
+    release_feature_lock(str(tmp_path), "F01", result["token"])
+    assert not (tmp_path / "F01" / "lock").exists()
+    assert (tmp_path / "build_lock").exists()  # B's lock preserved
+
+
+# ---------------------------------------------------------------------------
+# prepare_dispatch with feature parameter
+# ---------------------------------------------------------------------------
+
+def test_prepare_dispatch_feature_subdir(tmp_path):
+    (tmp_path / "program.md").write_text("# Program\nGoal: test")
+    path = prepare_dispatch(str(tmp_path), "B", ["program.md"],
+                           note="test", feature="F01")
+    assert "F01" in path
+    assert (tmp_path / "F01" / "dispatch_B.md").exists()
+    content = (tmp_path / "F01" / "dispatch_B.md").read_text()
+    assert "# Program" in content
+    assert "test" in content
+
+
+def test_prepare_dispatch_feature_reads_from_root(tmp_path):
+    """Feature dispatch reads shared files from evolve root, not feature subdir."""
+    (tmp_path / "program.md").write_text("shared content")
+    feat_dir = tmp_path / "F01"
+    feat_dir.mkdir()
+    (feat_dir / "strategy.md").write_text("feature strategy")
+    path = prepare_dispatch(str(tmp_path), "C",
+                           ["program.md", "F01/strategy.md"],
+                           feature="F01")
+    content = Path(path).read_text()
+    assert "shared content" in content
+    assert "feature strategy" in content
+
+
+# ---------------------------------------------------------------------------
+# Helper: make TSV at specific path
+# ---------------------------------------------------------------------------
+
+def _make_tsv_at(base_path, rows):
+    """Create results.tsv at base_path with header + rows."""
+    tsv_path = base_path / "results.tsv"
+    with open(tsv_path, "w", newline="") as f:
+        f.write('\t'.join(HEADER_FIELDS) + '\n')
+        for row in rows:
+            f.write('\t'.join(str(row.get(h, '-')) for h in HEADER_FIELDS) + '\n')
+    return str(tsv_path)
