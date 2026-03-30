@@ -202,7 +202,6 @@ from prepare import load_adapter, load_eval_config
 - `git checkout -b evolve/<tag>`
 - Generate `.evolve/adapter.py` (from reference adapters + project scan)
 - Create `.evolve/results.tsv` (header only)
-- Create `.evolve/started_at` (current Unix timestamp — used by `should_stop()` for 24h runtime limit)
 - Create `.evolve/strategy.md` (empty template)
 - Create `.evolve/run.log` (empty)
 - Add `.evolve/` to `.gitignore`

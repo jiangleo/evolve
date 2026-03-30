@@ -197,16 +197,13 @@ def should_stop(results_tsv: str, feature: str) -> tuple:
     progress = read_progress(results_tsv)
     trajectory = analyze_trajectory(results_tsv, feature)
 
-    # Time-based limit: check started_at file (written during init)
-    started_at_path = Path(results_tsv).parent / "started_at"
-    if started_at_path.exists():
-        try:
-            started = float(started_at_path.read_text().strip())
-            elapsed_hours = (time.time() - started) / 3600
-            if elapsed_hours >= HARD_LIMITS["max_runtime_hours"]:
-                return True, f"Runtime limit reached ({HARD_LIMITS['max_runtime_hours']}h)"
-        except (ValueError, OSError):
-            pass
+    # Time-based limit: use program.md mtime (created at init, never modified)
+    program_md = Path(results_tsv).parent / "program.md"
+    if program_md.exists():
+        started = os.path.getmtime(str(program_md))
+        elapsed_hours = (time.time() - started) / 3600
+        if elapsed_hours >= HARD_LIMITS["max_runtime_hours"]:
+            return True, f"Runtime limit reached ({HARD_LIMITS['max_runtime_hours']}h)"
 
     if progress["total_iterations"] >= HARD_LIMITS["max_rounds_total"]:
         return True, "Total round limit reached"

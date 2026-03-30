@@ -798,22 +798,23 @@ def test_hard_limits_values():
 
 
 def test_should_stop_runtime_limit():
-    """Stops when started_at timestamp exceeds max_runtime_hours."""
+    """Stops when program.md mtime exceeds max_runtime_hours."""
     rows = [{"commit": "a", "phase": "plan", "feature": "-", "scores": "-",
              "total": "-", "status": "keep", "summary": "spec"},
             {"commit": "b", "phase": "build", "feature": "auth", "scores": "-",
              "total": "-", "status": "keep", "summary": "build"}]
     with tempfile.TemporaryDirectory() as tmpdir:
         path = os.path.join(tmpdir, "results.tsv")
-        # Write results.tsv
         with open(path, 'w') as f:
             f.write('\t'.join(HEADER_FIELDS) + '\n')
             for row in rows:
                 f.write('\t'.join(row.get(h, '') for h in HEADER_FIELDS) + '\n')
-        # Write started_at with a timestamp 25 hours ago
-        started_at = os.path.join(tmpdir, "started_at")
-        with open(started_at, 'w') as f:
-            f.write(str(time.time() - 25 * 3600))
+        # Create program.md with mtime 25 hours ago
+        program_md = os.path.join(tmpdir, "program.md")
+        with open(program_md, 'w') as f:
+            f.write("# Program\n")
+        old_time = time.time() - 25 * 3600
+        os.utime(program_md, (old_time, old_time))
         stop, reason = should_stop(path, "auth")
         assert stop is True
         assert "Runtime limit" in reason
