@@ -185,6 +185,7 @@ if evaluator is None:
 ```
 
 Invoke the evaluator CLI to score `type: llm-judged` dimensions.
+**Do NOT specify `--model` when calling codex** — let it use the user's configured default.
 Eval output written to `.evolve/eval_codex.md` (or `.evolve/eval_claude.md`).
 
 ### Score Aggregation

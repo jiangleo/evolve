@@ -17,6 +17,7 @@
 - Independent evaluator call is programmatically required (enforced by prepare.py)
 - Eval without independent evaluator = invalid (validate_eval_result raises ValueError)
 - If all evaluators unavailable, loop stops — do NOT fall back to self-eval
+- When calling codex CLI, do NOT specify `--model` — let it use the user's configured default in `~/.codex/config.toml`. Hardcoding a model name overrides the user's preference and may use an outdated model.
 
 ## Strategic Decision Menu
 
