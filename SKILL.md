@@ -75,13 +75,26 @@ Q5: "Constraints?
      D. Other: ___"
 ```
 
-3-5 questions, ~2 minutes. O may suggest skills for user to install based on project type:
+3-5 questions, ~2 minutes.
+
+#### Skill Discovery
+
+After brainstorming, O scans installed skills and recommends additions based on project type:
+
+1. **Scan**: List all available skills (slash commands) in current environment
+2. **Recommend**: Based on project type, suggest skills that agents might need during the loop
+3. **Confirm**: Ask user which to include
 
 ```
-"Detected web app project. Recommend installing:
-  - /qa → systematic testing during evaluation
-  - /browse → live page inspection
-  Optional — works without them, but evaluation quality improves."
+"当前已安装的 skills：
+  ✅ /evolve, /loop, /brainstorming, /qa, /browse
+
+  根据项目类型，建议补充：
+  A. /simplify → B 重构时用，降低代码复杂度
+  B. /tdd → B 写代码时用，测试驱动开发
+  C. 不需要额外 skills
+
+  选好后我会写进 program.md，B 和 C 在循环中可以按需调用。"
 ```
 
 ### Step 3: Generate program.md (automatic + user review)
@@ -110,6 +123,12 @@ dimensions:
 - Stack: <from Step 1 scan>
 - Dependency limits: <from user>
 - No-go zones: <from user>
+
+## Available Skills
+<!-- O scans environment + user confirms during init. Agents call these as needed. -->
+- /qa → systematic testing, B calls during build, C calls during eval
+- /browse → live page inspection, C calls to verify UI
+- /simplify → reduce complexity, B calls during refactor
 
 ## Agent Rules
 - Do not modify program.md
