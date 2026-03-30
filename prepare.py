@@ -35,6 +35,8 @@ HARD_LIMITS = {
 
 INDEPENDENT_EVALUATORS = ["codex", "claude"]
 
+HAIKU_MODEL = os.environ.get("EVOLVE_HAIKU_MODEL", "claude-haiku-4-5-20251001")
+
 REQUIRED_ADAPTER_FUNCTIONS = ["setup", "run_checks", "teardown"]
 
 
@@ -534,7 +536,7 @@ def _haiku_summarize(status_text: str, raw_files: dict) -> str:
             files_text += f"\n--- {name} ---\n{content}\n"
 
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=HAIKU_MODEL,
             max_tokens=300,
             messages=[{"role": "user", "content": (
                 "Summarize this evolve run state for the orchestrator to decide next dispatch.\n\n"
@@ -630,7 +632,12 @@ def _parse_file_spec(file_spec: str):
     # Line range: "file.md:100-200" or "file.md:42"
     if ":" in file_spec:
         name, range_str = file_spec.rsplit(":", 1)
-        if range_str.replace("-", "").isdigit():
+        # Validate: must be digits and optional dash, e.g. "100-200" or "42"
+        # Reject malformed specs like ":-5" or ":"
+        if (range_str.replace("-", "").isdigit()
+                and range_str
+                and not range_str.startswith("-")
+                and not range_str.endswith("-")):
             parts = range_str.split("-", 1)
             start = int(parts[0])
             end = int(parts[1]) if len(parts) > 1 else start

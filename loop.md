@@ -12,7 +12,18 @@ Each time `/evolve` is triggered and `.evolve/results.tsv` exists, enter this lo
 
 ### 0. Concurrency Lock
 
-Hook already acquired the lock via `acquire_lock()`. If another session is running, Hook still updates manifest but O should check lock state.
+O acquires the lock at the start of each round:
+
+```python
+import sys
+sys.path.insert(0, '.claude/skills/evolve')
+from prepare import acquire_lock, update_lock, release_lock
+
+lock = acquire_lock(".evolve")
+if not lock["acquired"]:
+    # Another session running — show progress, then stop
+    -> Progress Report (see below), then stop immediately
+```
 
 Call `update_lock(".evolve", phase, feature)` at every major step.
 Call `release_lock(".evolve")` when done.
@@ -47,7 +58,7 @@ prepare_dispatch(".evolve", "B", [
     "program.md",
     "strategy.md",
     "product-experience-design.md#F07 Pattern Mirror",    # only F07 section
-    "product-experience-design.md#F02 Canvas:953-969",    # only Card specs
+    "product-experience-design.md#F02 Canvas",             # only F02 Canvas section
 ], note="F07 references F02 Canvas Card C/D for layout")
 ```
 

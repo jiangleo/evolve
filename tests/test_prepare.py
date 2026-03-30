@@ -1250,3 +1250,24 @@ def test_parse_file_spec_section():
     name, slicer = _parse_file_spec("design.md#F07")
     assert name == "design.md"
     assert slicer is not None
+
+
+def test_parse_file_spec_malformed_range():
+    """Malformed ranges like ':-5' are treated as plain filenames."""
+    name, slicer = _parse_file_spec("file.md:-5")
+    assert name == "file.md:-5"
+    assert slicer is None
+
+
+def test_parse_file_spec_trailing_dash():
+    """Trailing dash like ':10-' is treated as plain filename."""
+    name, slicer = _parse_file_spec("file.md:10-")
+    assert name == "file.md:10-"
+    assert slicer is None
+
+
+def test_parse_file_spec_empty_range():
+    """Empty range ':' is treated as plain filename."""
+    name, slicer = _parse_file_spec("file.md:")
+    assert name == "file.md:"
+    assert slicer is None
