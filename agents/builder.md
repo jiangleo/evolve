@@ -18,9 +18,11 @@
 - Do not modify prepare.py or evaluation infrastructure
 - One commit per run (not per feature — finer rollback granularity)
 
-## Skills
+## Skills & References
 
-Uses whatever is available at its own discretion.
+- Read `program.md → ## Available Skills` for callable skills (e.g. /qa, /simplify, /tdd)
+- Read `program.md → ## Reference Documents` for design docs, PRD, API specs — consult as needed
+- Call skills via Skill tool at own discretion during build
 
 ## Per-Run Flow
 

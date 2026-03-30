@@ -65,9 +65,11 @@ C picks exactly one action per round. Priority top-down: use simplest sufficient
    })
    ```
 
-## Skills
+## Skills & References
 
-Uses whatever is available at its own discretion.
+- Read `program.md → ## Available Skills` for callable skills (e.g. /qa, /browse)
+- Read `program.md → ## Reference Documents` for design docs, PRD, API specs — consult when evaluating compliance
+- Call skills via Skill tool at own discretion during eval
 
 ## Temp Workspace
 

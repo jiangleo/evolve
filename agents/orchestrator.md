@@ -15,9 +15,11 @@
 - Do not touch code or make quality judgments
 - Do not make strategic decisions (that's C's job)
 
-## Skills
+## Skills & References
 
-Uses whatever is available at its own discretion.
+- Read `program.md → ## Available Skills` for callable skills
+- Read `program.md → ## Reference Documents` for context
+- During init: scan environment for user's custom skills, recommend based on project type
 
 ## What O Does NOT Do
 
