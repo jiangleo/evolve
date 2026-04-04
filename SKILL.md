@@ -66,7 +66,7 @@ Q3: "What matters for quality?
      C. API design (AI review)
      D. Other: ___"
 
-Q4: "Score threshold per dimension? Default 7/10."
+Q4: "Score threshold per dimension? Default 3.5/5."
 
 Q5: "Constraints?
      A. No new dependencies
@@ -140,6 +140,17 @@ dimensions:
     type: deterministic | llm-judged
     cmd: <command>  # optional, for deterministic
     threshold: <float>
+    description: >  # optional, multi-line
+      What this dimension measures and how to evaluate it.
+    scoring_rubric:  # optional but recommended, anchor points for consistent LLM scoring
+      1: "definition of 1"
+      2: "definition of 2"
+      3: "definition of 3"
+      4: "definition of 4 (threshold)"
+      5: "definition of 5"
+    checks:  # optional, for deterministic: explicit check items
+      - check item 1
+      - check item 2
 
 ## Technical Constraints
 - Stack: <from Step 1 scan>
@@ -168,6 +179,26 @@ dimensions:
 - Do not modify files under .claude/skills/evolve/
 - Git commit after each agent run
 - Build output appended to .evolve/run.log
+```
+
+**Sub-PRD Pattern** (for design-heavy products):
+
+When features have a design phase before build, use the sub-PRD convention:
+- Feature names use suffixes: `F1-design`, `F1-build`, `F2-design`, `F2-build`, ...
+- `F*-design` produces a sub-PRD in `.evolve/sub-prd/{feature_base}.md`
+- `F*-build` reads the sub-PRD as its specification
+- Adapter routes checks by suffix (design → doc quality, build → implementation)
+- Parallel groups: design features can run in parallel, build features may have dependencies
+
+```markdown
+## Feature List
+### Group A (parallel)
+- [ ] F1-design — 功能 A 产品文档
+- [ ] F2-design — 功能 B 产品文档
+
+### Group B (after Group A)
+- [ ] F1-build — 功能 A 实现
+- [ ] F2-build — 功能 B 实现（依赖 F1-build 的数据格式）
 ```
 
 Show to user: "Here's your program.md. Want to adjust?"
@@ -233,9 +264,9 @@ Example:
 ### 评估维度
 | 维度 | 类型 | 门槛 |
 |------|------|------|
-| 测试通过率 | deterministic (vitest) | 7.0 |
-| 代码质量 | llm-judged (Codex) | 7.0 |
-| API 设计 | llm-judged (Codex) | 7.0 |
+| 测试通过率 | deterministic (vitest) | 3.5 |
+| 代码质量 | llm-judged (Codex) | 3.5 |
+| API 设计 | llm-judged (Codex) | 3.5 |
 
 ### 产出文件
 → src/routes/*.ts, src/middleware/auth.ts, ...

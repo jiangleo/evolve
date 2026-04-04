@@ -94,8 +94,19 @@ def load_eval_config(eval_yml_path: str) -> list[dict]:
             type: deterministic|llm-judged
             cmd: <command>          # optional, only for deterministic
             threshold: <float>      # optional, default 7.0
+            description: >          # optional, multi-line description
+              ...
+            scoring_rubric:         # optional, anchor points for LLM scoring
+              1: "..."
+              5: "..."
+              8: "..."
+              10: "..."
+            checks:                 # optional, deterministic check items
+              - check description 1
+              - check description 2
 
-    Returns list of dicts with keys: name, type, threshold, and optionally cmd.
+    Returns list of dicts with keys: name, type, threshold,
+    and optionally cmd, description, scoring_rubric, checks.
     """
     path = Path(eval_yml_path)
     if not path.exists():
@@ -104,17 +115,65 @@ def load_eval_config(eval_yml_path: str) -> list[dict]:
     content = path.read_text()
     dimensions = []
     current = None
+    in_rubric = False
+    in_checks = False
+    in_description = False
 
     for line in content.split('\n'):
         stripped = line.strip()
+
+        # Skip blanks and comments at top level
         if stripped == '' or stripped.startswith('#'):
+            if in_description and current:
+                in_description = False
             continue
+
+        # New dimension
         if stripped.startswith('- name:'):
+            in_rubric = False
+            in_checks = False
+            in_description = False
             if current:
                 dimensions.append(current)
             name = stripped.split(':', 1)[1].strip()
-            current = {"name": name, "type": "llm-judged", "threshold": 7.0}
-        elif current and stripped.startswith('type:'):
+            current = {"name": name, "type": "llm-judged", "threshold": 3.5}
+            continue
+
+        if not current:
+            continue
+
+        # Detect indent level to know if we're still in a dimension
+        raw_indent = len(line) - len(line.lstrip())
+
+        # Rubric entries: "  1: ..." or "  10: ..."
+        if in_rubric:
+            m = _RUBRIC_RE.match(stripped)
+            if m:
+                score = int(m.group(1))
+                text = m.group(2).strip().strip('"').strip("'")
+                current.setdefault("scoring_rubric", {})[score] = text
+                continue
+            else:
+                in_rubric = False
+
+        # Check list entries: "  - ..."
+        if in_checks:
+            if stripped.startswith('- '):
+                current.setdefault("checks", []).append(stripped[2:].strip())
+                continue
+            else:
+                in_checks = False
+
+        # Multi-line description continuation
+        if in_description:
+            if raw_indent >= 6 and not stripped.endswith(':'):
+                current["description"] = current.get("description", "") + " " + stripped
+                continue
+            else:
+                in_description = False
+
+        # Field parsing
+        if stripped.startswith('type:'):
             val = stripped.split(':', 1)[1].strip()
             if val not in ("deterministic", "llm-judged"):
                 raise ValueError(
@@ -122,15 +181,30 @@ def load_eval_config(eval_yml_path: str) -> list[dict]:
                     f"Must be 'deterministic' or 'llm-judged'."
                 )
             current["type"] = val
-        elif current and stripped.startswith('cmd:'):
+        elif stripped.startswith('cmd:'):
             current["cmd"] = stripped.split(':', 1)[1].strip()
-        elif current and stripped.startswith('threshold:'):
+        elif stripped.startswith('threshold:'):
             current["threshold"] = float(stripped.split(':', 1)[1].strip())
+        elif stripped.startswith('description:'):
+            desc = stripped.split(':', 1)[1].strip()
+            if desc == '>' or desc == '|':
+                in_description = True
+                current["description"] = ""
+            elif desc:
+                current["description"] = desc
+        elif stripped.startswith('scoring_rubric:'):
+            in_rubric = True
+        elif stripped.startswith('checks:'):
+            in_checks = True
 
     if current:
         dimensions.append(current)
 
     return dimensions
+
+
+import re
+_RUBRIC_RE = re.compile(r'^(\d+)\s*:\s*(.+)$')
 
 
 # ---------------------------------------------------------------------------

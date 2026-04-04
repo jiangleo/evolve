@@ -413,7 +413,7 @@ def test_load_eval_config_defaults(tmp_path):
     dims = load_eval_config(str(yml))
     assert len(dims) == 1
     assert dims[0]["type"] == "llm-judged"
-    assert dims[0]["threshold"] == 7.0
+    assert dims[0]["threshold"] == 3.5
 
 
 def test_load_eval_config_comments_and_blanks(tmp_path):
@@ -436,6 +436,95 @@ dimensions:
     assert dims[0]["name"] == "Dimension A"
     assert dims[1]["name"] == "Dimension B"
     assert dims[1]["threshold"] == 6.0
+
+def test_load_eval_config_scoring_rubric(tmp_path):
+    """Parse scoring_rubric anchor points."""
+    yml = tmp_path / "eval.yml"
+    yml.write_text("""dimensions:
+  - name: Content Quality
+    type: llm-judged
+    threshold: 7.0
+    scoring_rubric:
+      1: "content missing or irrelevant"
+      5: "content mostly complete but gaps"
+      8: "content complete, covers all requirements"
+      10: "perfect, nothing to improve"
+""")
+    dims = load_eval_config(str(yml))
+    assert len(dims) == 1
+    assert "scoring_rubric" in dims[0]
+    rubric = dims[0]["scoring_rubric"]
+    assert rubric[1] == "content missing or irrelevant"
+    assert rubric[8] == "content complete, covers all requirements"
+    assert rubric[10] == "perfect, nothing to improve"
+
+
+def test_load_eval_config_checks(tmp_path):
+    """Parse deterministic checks list."""
+    yml = tmp_path / "eval.yml"
+    yml.write_text("""dimensions:
+  - name: File Completeness
+    type: deterministic
+    threshold: 8.0
+    checks:
+      - config.yml exists and valid
+      - README.md has usage section
+      - tests/ directory has at least 3 files
+""")
+    dims = load_eval_config(str(yml))
+    assert len(dims) == 1
+    assert "checks" in dims[0]
+    assert len(dims[0]["checks"]) == 3
+    assert dims[0]["checks"][0] == "config.yml exists and valid"
+
+
+def test_load_eval_config_description(tmp_path):
+    """Parse multi-line description."""
+    yml = tmp_path / "eval.yml"
+    yml.write_text("""dimensions:
+  - name: Code Quality
+    type: llm-judged
+    threshold: 7.0
+    description: >
+      Evaluate code readability, structure,
+      and adherence to project conventions.
+  - name: Tests
+    type: deterministic
+    threshold: 8.0
+""")
+    dims = load_eval_config(str(yml))
+    assert len(dims) == 2
+    assert "description" in dims[0]
+    assert "readability" in dims[0]["description"]
+    assert dims[1]["name"] == "Tests"
+
+
+def test_load_eval_config_full_featured(tmp_path):
+    """Parse eval.yml with all new fields together."""
+    yml = tmp_path / "eval.yml"
+    yml.write_text("""dimensions:
+  - name: Product Design
+    type: llm-judged
+    threshold: 8.0
+    description: >
+      Evaluate the product design quality.
+    scoring_rubric:
+      5: "basic design"
+      8: "good design"
+      10: "exceptional design"
+  - name: Implementation
+    type: deterministic
+    threshold: 8.0
+    checks:
+      - SKILL.md exists
+      - frontmatter has required fields
+""")
+    dims = load_eval_config(str(yml))
+    assert len(dims) == 2
+    assert dims[0]["scoring_rubric"][8] == "good design"
+    assert dims[0]["description"].strip().startswith("Evaluate")
+    assert len(dims[1]["checks"]) == 2
+
 
 # ---------------------------------------------------------------------------
 # adapter loading tests

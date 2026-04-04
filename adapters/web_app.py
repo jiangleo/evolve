@@ -191,7 +191,7 @@ def _run_tests(project_dir: str, timeout: int = TEST_TIMEOUT) -> dict:
     total = parsed["total"]
     passed = parsed["passed"]
     pass_rate = passed / total if total > 0 else 0.0
-    score = round(pass_rate * 10, 1)
+    score = round(pass_rate * 5, 1)
     lines = stdout.split('\n')
     truncated = '\n'.join(lines[-200:]) if len(lines) > 200 else stdout
     return {
