@@ -4,7 +4,7 @@
 
 ## Core Flow
 
-1. Read `.evolve/manifest.md` (Haiku-generated summary — one file, enough to decide)
+1. Read `.evolve/manifest.md` (H-generated summary — one file, enough to decide)
 2. Decide: dispatch B? dispatch C? stop?
 3. Decide: what files to include in dispatch (O picks, code assembles)
 4. Call `prepare_dispatch()` — code writes `dispatch_X.md`

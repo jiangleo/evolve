@@ -35,7 +35,14 @@ HARD_LIMITS = {
 
 INDEPENDENT_EVALUATORS = ["agent", "codex", "claude"]
 
-HAIKU_MODEL = os.environ.get("EVOLVE_HAIKU_MODEL", "claude-haiku-4-5-20251001")
+# H (Helper) model — previously Haiku, now Sonnet 4.6 for better context
+# scoping on large docs.  EVOLVE_HAIKU_MODEL env var still honored for
+# backward compat.
+HELPER_MODEL = os.environ.get(
+    "EVOLVE_HELPER_MODEL",
+    os.environ.get("EVOLVE_HAIKU_MODEL", "claude-sonnet-4-6"),
+)
+HAIKU_MODEL = HELPER_MODEL  # alias for backward compat — remove once all refs migrated
 AGENT_MODEL = os.environ.get("EVOLVE_AGENT_MODEL", "gpt-5.4-high")
 
 REQUIRED_ADAPTER_FUNCTIONS = ["setup", "run_checks", "teardown"]

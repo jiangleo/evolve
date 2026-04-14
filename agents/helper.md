@@ -2,7 +2,10 @@
 
 **Role:** Prep assistant. Cheap, fast, handles all context work so O can focus on decisions.
 
-**Model:** Haiku (low cost, fast turnaround)
+**Model:** Sonnet 4.6 (`claude-sonnet-4-6`).  Was Haiku — upgraded because
+Haiku's context-scoping accuracy on large design docs was inconsistent
+and a bad manifest propagates to every downstream dispatch.  Override via
+`EVOLVE_HELPER_MODEL` env var.
 
 ## Responsibilities
 
@@ -52,7 +55,7 @@ O dispatches H with a task like: "Prep context for B on feature F07."
 
 ## Why a Separate Agent
 
-- **Cheap:** Haiku model, pennies per call
 - **Clean separation:** O's context window stays light (no file reading)
 - **Intelligent scoping:** H understands feature dependencies (LLM capability) AND locates content precisely (tool capability)
 - **Reusable:** Any prep work O needs, H can do
+- **Sonnet tier:** cheaper than Opus but reliable on structured doc extraction — Haiku's scoping accuracy on large design docs was inconsistent

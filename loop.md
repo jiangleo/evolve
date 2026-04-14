@@ -56,7 +56,7 @@ features = scan_all_features(".evolve")
 #            "consecutive_fails": ...}]
 ```
 
-### 2. Dispatch H (Haiku) for prep — parallel
+### 2. Dispatch H (Sonnet) for prep — parallel
 
 O spawns H agents for every feature that needs prep. Multiple H agents can run simultaneously.
 
@@ -67,7 +67,7 @@ needs_prep = [f for f in features if f["state"] in ("needs_build", "needs_eval",
 
 for feat in needs_prep:
     Agent(prompt=f"You are H. Prep context for {feat['name']}. Read agents/helper.md for instructions.",
-          model="haiku", run_in_background=True)
+          model="sonnet", run_in_background=True)
 ```
 
 H does:
@@ -222,7 +222,7 @@ Features whose dependencies are all completed can be prepped by H.
 ```python
 for feat in start_ready:
     Agent(prompt=f"You are H. Prep context for {feat['name']}. Read agents/helper.md for instructions.",
-          model="haiku", run_in_background=True)
+          model="sonnet", run_in_background=True)
 ```
 
 ### 7. After subagent completes
