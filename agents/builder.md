@@ -46,9 +46,48 @@
    })
    ```
 
+## Two Modes (project-specific extension)
+
+B's behavior is controlled by the `mode:` field in `.evolve/{feature}/strategy.md`. If a project's adapter uses both modes (e.g. dialogue-branch E2E testing), the dispatch file will tell B which mode to run.
+
+### Mode: prep (each feature's first run)
+When strategy.md says `mode: prep`:
+- Read source files listed in dispatch_B.md (e.g. tool definitions, skill SKILL.md, handlers)
+- Write `.evolve/{feature}/expected_path.md` — a YAML describing the expected invocation chain (trigger → components → terminals). Schema is in the dispatch.
+- git commit (doc-only, no product code change)
+- Skip the normal "write code" flow in step 3 above
+
+### Mode: fix (default, existing behavior)
+When strategy.md says `mode: fix` or omits the field:
+- Follow the original flow above — write code to fix the failing feature based on dispatch_B.md's failure summary
+- Do NOT touch `expected_path.md`, `adapter.py`, `eval.yml`, or anything under `.evolve/codex_prompts/` — those are testing infrastructure that B in fix mode should preserve
+
+## Replay Protocol (when project uses evidence-driven eval)
+
+If `program.md → ## Agent Rules` says C does not directly carry the browser,
+then B's build output will be replayed by a browser subagent before C scores.
+That replay is subject to an **Artifact Gate** (machine-judged qualification
+check).  B must not undermine the gate:
+
+- **Never touch the replay infrastructure** — `.evolve/adapter.py`, `eval.yml`,
+  `.evolve/features/*/expected_path.md`, `.evolve/runs/`, any `gate_report.md`
+  are testing infra, not product code.
+- **Never hand-edit `trace.json` / `transcript.txt` / screenshots** — these
+  are produced by the browser subagent during replay.  Forging them bypasses
+  the gate and invalidates the round.
+- **Reproducibility first** — code you ship must run under a cold-start
+  browser with a fresh test phone.  Don't rely on cached localStorage /
+  cookies / service workers to make behavior work.
+- **When `gate_report.md` says the previous round was rejected**: read it.
+  The issues listed there point to either (a) real product bugs (AI never
+  responds within 90s → fix latency) or (b) frontend state bugs (UI requires
+  stale cache to render → fix cold-start path).  Either way the fix is in
+  product code, not in the replay harness.
+
 ## What B Does NOT Do
 
 - Evaluate its own work
 - Make strategic decisions (continue/pivot/rollback)
 - Write to `.evolve/{feature}/strategy.md`
 - Call independent evaluators
+- Touch `.evolve/adapter.py`, `eval.yml`, `expected_path.md`, or `runs/`
