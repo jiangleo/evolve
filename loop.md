@@ -116,6 +116,49 @@ start_ready = [f for f in features if f["state"] == "not_started" and f["in_prog
 # start_ready: filter further by dependency — only those whose dependencies are "completed"
 ```
 
+### 3.5. Dispatch M (Mentor) — parallel, via Agent tool (Opus 4.6)
+
+Before dispatching B/C for a feature, check if the feature is **stuck**.
+If consecutive_fails >= 3 AND prior advice count < 3, O invokes M (Claude
+Opus 4.6) to read the full history and write advice for B and C.
+
+M is dispatched via the **Agent tool** (not codex exec) because:
+- Opus gives a different-model second opinion (B/C are both gpt-5.4-high).
+- M is pure consultant — writes markdown, does not edit code.
+- Agent tool is one-shot and well-bounded for the diagnostic work.
+
+```python
+from adapter import (
+    should_invoke_mentor, build_dispatch_M, count_mentor_advice,
+)
+
+for feat in features:
+    invoke, reason = should_invoke_mentor(feat["name"])
+    if invoke:
+        prompt = build_dispatch_M(feat["name"], round_n=feat.get("eval_count", 0))
+        Agent(
+            description=f"Mentor advice for {feat['name']}",
+            subagent_type="general-purpose",
+            model="opus",
+            prompt=prompt,
+            run_in_background=True,
+        )
+    elif reason.startswith("blocker"):
+        # 3 advices already and still failing — mark BLOCKER, skip this feature
+        # for the rest of the run.  Write to strategy.md and results.tsv.
+        # (BLOCKER is a permanent skip — no more B/C/M dispatch for this feature.)
+        mark_feature_blocker(feat["name"], reason)
+```
+
+After the Agent returns, it will have written
+`.evolve/features/{feat}/mentor_advice_{n}.md`.  The next round's
+`build_dispatch_B` and `build_dispatch_C` automatically prepend this file
+so B and C see the advice.  O does not need to thread anything manually.
+
+**Mentor concurrency:** multiple M agents can run in parallel across
+different features (each writes to its own feature dir), but a feature
+should not have two M agents in flight simultaneously — use feature locks.
+
 ### 4. Dispatch C — parallel via codex CLI
 
 All features that need eval can be dispatched simultaneously.  C is invoked

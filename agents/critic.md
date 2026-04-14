@@ -106,6 +106,31 @@ not as a Claude subagent.  That means:
 
 Gets its own working directory for multi-step analysis. Internal implementation detail, not part of file protocol.
 
+## Mentor Advice (if present in your dispatch)
+
+When `dispatch_C.md` contains a `## Mentor Advice` section at the top, a
+mentor (Claude Opus, second opinion) has reviewed the feature's full
+history after 3+ consecutive fails.  Treat the advice as overrides:
+
+- The "Advice for C" bullets override your default rubric interpretation
+  for this round.  If mentor says "log X counts as pass even if rationale
+  nits on Y," do not fail on Y alone.
+- The "How to tell it worked" bullets become ADDITIONAL acceptance
+  criteria on top of the fixed checklist.  If both the checklist and the
+  mentor bullets are satisfied, record pass.
+- If this is mentor advice #3 and the feature still fails this round,
+  record `status=blocker` in results.tsv and write a BLOCKER section in
+  strategy.md.  The loop will skip this feature for the rest of the run.
+
+BLOCKER format in strategy.md:
+```
+## BLOCKER (advice #3 exhausted)
+- feature: {feature_id}
+- last_scores: {scores}
+- root_cause_per_mentor: <quote last mentor diagnosis>
+- human_action_needed: <what the user should investigate>
+```
+
 ## Replay Protocol (when project uses evidence-driven eval)
 
 Every `run_checks()` call is one fresh replay round.  Before C scores, the

@@ -72,6 +72,21 @@ When strategy.md says `mode: fix` or omits the field:
 - Follow the original flow above — write code to fix the failing feature based on dispatch_B.md's failure summary
 - Do NOT touch `expected_path.md`, `adapter.py`, `eval.yml`, or anything under `.evolve/codex_prompts/` — those are testing infrastructure that B in fix mode should preserve
 
+## Mentor Advice (if present in your dispatch)
+
+When `dispatch_B.md` contains a `## Mentor Advice` section at the top, a
+mentor (Claude Opus, second opinion) has reviewed the feature's full
+history.  Follow the "Advice for B" bullets **before** anything else in
+your normal flow.  If you disagree with the advice:
+
+1. Do NOT silently ignore it.
+2. Add a one-line rationale to `strategy.md` (e.g. "mentor advised X but
+   that conflicts with expected_path step Y, attempting Z instead").
+3. Fall back to the default flow.
+
+The mentor is wrong often enough that you retain judgment, but if you
+override, you must leave a trail.
+
 ## Replay Protocol (when project uses evidence-driven eval)
 
 If `program.md → ## Agent Rules` says C does not directly carry the browser,
