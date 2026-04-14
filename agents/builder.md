@@ -23,11 +23,21 @@
   - If a feature exceeds budget, stop at a coherent, passing checkpoint and set `summary` in results.tsv to include `"needs decompose"` — C will split remaining work via Decompose strategy
   - Never reduce correctness, readability, or test coverage just to stay under budget
 
-## Skills & References
+## Execution Model
 
-- Read `program.md → ## Available Skills` for callable skills (e.g. /qa, /simplify, /tdd)
-- Read `program.md → ## Reference Documents` for design docs, PRD, API specs — consult as needed
-- Call skills via Skill tool at own discretion during build
+B is dispatched as a **codex exec subprocess** (gpt-5.4-high by default), not
+as a Claude subagent.  That means:
+
+- No access to Claude's Skill tool — `program.md → ## Available Skills` is
+  advisory context (the skills live elsewhere and aren't callable here), not
+  a menu of tools to call.
+- B's own toolbox is codex's native bash + file editor.  Use them directly.
+- `dispatch_B.md` is the entire prompt — self-contained, no external context
+  fetch expected.
+
+## References
+
+- Read `program.md → ## Reference Documents` for design docs, PRD, API specs — consult as needed via bash/file reads
 
 ## Per-Run Flow
 

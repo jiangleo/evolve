@@ -86,11 +86,21 @@ In this mode:
 
 To tell this mode apart: check if `program.md → ## Agent Rules` says "C does not directly carry the browser" or similar. If present, you are in evidence-driven mode.
 
-## Skills & References
+## Execution Model
 
-- Read `program.md → ## Available Skills` for callable skills (e.g. /qa, /browse)
+C is dispatched as a **codex exec subprocess** (gpt-5.4-high by default),
+not as a Claude subagent.  That means:
+
+- No access to Claude's Skill tool — `program.md → ## Available Skills` is
+  advisory context, not a menu of tools to call.
+- C's toolbox is codex's native bash + file editor.  Use `python -c` or
+  `python .evolve/run_checks_cli.py` via bash to invoke `adapter.run_checks()`.
+- `dispatch_C.md` is the entire prompt — self-contained, no external context
+  fetch expected.
+
+## References
+
 - Read `program.md → ## Reference Documents` for design docs, PRD, API specs — consult when evaluating compliance
-- Call skills via Skill tool at own discretion during eval
 
 ## Temp Workspace
 

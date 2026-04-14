@@ -116,30 +116,61 @@ start_ready = [f for f in features if f["state"] == "not_started" and f["in_prog
 # start_ready: filter further by dependency — only those whose dependencies are "completed"
 ```
 
-### 4. Dispatch C — parallel
+### 4. Dispatch C — parallel via codex CLI
 
-All features that need eval can be dispatched simultaneously. C agents are read-only on code.
+All features that need eval can be dispatched simultaneously.  C is invoked
+as a **codex exec subprocess** (gpt-5.4-high by default), not as a Claude
+subagent — one fewer wrapper layer, and `dispatch_C.md` is already a
+self-contained prompt.
 
 ```python
+from adapter import dispatch_codex_agent
+
 for feat in eval_ready:
     acquire_feature_lock(".evolve", feat["name"], "C")
-    Agent(prompt=f"You are C. Read .evolve/{feat['name']}/dispatch_C.md for your full context.",
-          run_in_background=True)
+    # dispatch_codex_agent rebuilds dispatch_C.md then runs:
+    #   codex exec --model gpt-5.4-high -s workspace-write --skip-git-repo-check
+    # Output streamed to .evolve/features/{feat}/dispatch_C_codex.log
+    result = dispatch_codex_agent(feat["name"], "C", round_n=...)
+    # result["status"] ∈ {"ok", "crash", "timeout", "not_found"}
+    release_feature_lock(".evolve", feat["name"], "C")
 ```
 
-### 5. Dispatch B — exclusive
+To parallelize across features, wrap `dispatch_codex_agent()` in
+`concurrent.futures.ThreadPoolExecutor` — each codex process is fully
+independent and C is expected to only touch its own feature's strategy.md +
+the shared append-only results.tsv.
 
-Only one B agent at a time (git constraint). Pick the first needs_build feature with build_lock free.
+Override the model / sandbox / timeout via env vars if needed:
+- `EVOLVE_CODEX_MODEL` (default `gpt-5.4-high`)
+- `EVOLVE_CODEX_SANDBOX` (default `workspace-write`; set to `danger-full-access` only if absolutely required)
+- `EVOLVE_DISPATCH_C_TIMEOUT` (default 1200s / 20 min)
+
+### 5. Dispatch B — exclusive via codex CLI
+
+Only one B agent at a time (git constraint).  Pick the first needs_build
+feature with build_lock free.  Same codex exec pattern as C.
 
 ```python
+from adapter import dispatch_codex_agent
+
 if build_ready:
     feat = build_ready[0]
-    lock_ok = acquire_feature_lock(".evolve", feat["name"], "B")  # acquires build_lock + feature lock
+    lock_ok = acquire_feature_lock(".evolve", feat["name"], "B")
     if lock_ok:
-        Agent(prompt=f"You are B. Read .evolve/{feat['name']}/dispatch_B.md for your full context.")
+        result = dispatch_codex_agent(
+            feat["name"], "B",
+            mode="prep" if feat["state"] == "not_started" else "fix",
+            round_n=...,
+        )
+        release_feature_lock(".evolve", feat["name"], "B")
 ```
 
-**Pipeline overlap is allowed:** B(F02) and C(F01) can run concurrently since C is read-only on code.
+Override timeout via `EVOLVE_DISPATCH_B_TIMEOUT` (default 1800s / 30 min).
+
+**Pipeline overlap is allowed:** B(F02) and C(F01) can run concurrently
+because each is its own codex process — they do not share state beyond the
+append-only results.tsv.
 
 ### 6. Dispatch H for not_started features — parallel
 
