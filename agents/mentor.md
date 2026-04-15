@@ -151,25 +151,43 @@ rationales / gate issues by short hash or line reference>
 - Shift the primary diagnosis away from the dispatched feature
 - Re-run itself — each invocation is one-shot
 
-## Mentor-Meta Tier (2026-04-15)
+## Mentor-Meta Tier: 时间三幕（2026-04-15 v2）
 
-When dispatched with `--meta` flag or `.evolve/META_PENDING` exists, M
-operates in **cross-feature pattern-recognition mode**:
+每次触发 meta（由 `should_invoke_mentor_meta()` 判定），**并行**分派三个
+Opus 实例，**context 相互隔离**，从三个时间视角各自给可执行建议：
 
-- Reads `.evolve/results.tsv` across ALL features, not just one
-- Looks for patterns: same error msg in ≥2 features, same infra bug,
-  same failing dimension across features, regression clusters
-- Writes to `.evolve/META_ADVICE.md` (not per-feature)
-- Can recommend **framework / infra** changes, not just product
+| Mentor | 视角 | 函数 | 产出 |
+|---|---|---|---|
+| **Past** | 过去（经验教训） | `build_dispatch_mentor_past()` | `.evolve/META_PAST.md` |
+| **Present** | 当下（整理现场） | `build_dispatch_mentor_present()` | `.evolve/META_PRESENT.md` |
+| **Future** | 未来（谋划下一步） | `build_dispatch_mentor_future()` | `.evolve/META_FUTURE.md` |
+
+调度顺序：Past 和 Present 并行起；Future 在两者完成后起（读它们作为输入）。
+
+**每个 Mentor 的输出必须遵守**：
+1. 末尾有 `## Actionable Recommendations` 块
+2. **只分两档**：🕐 一小时级 / 🎯 整体级，每档 ≤5 条
+3. 每条建议必须含**动作 / 谁做 / 理由 / 验证**四要素
+4. 禁止"建议关注/建议评估"这类空话
+
+O 拿到三份报告后调 `synthesize_meta_advice()` 合成 `NEXT_ACTIONS.md`：
+- 3 份都说同件事 → 极高优先级立即执行
+- ≥2 份说同件事 → 值得验证
+- 只 1 份说 → 备忘观察
+- 🎯 整体级里涉及不可逆操作 → 汇总到 `## 需要决策` 给 jhwleo
 
 Trigger criteria (orchestrator checks `should_invoke_mentor_meta()`):
-- **Hourly floor**: ≥ 60 min since last meta run (or never run) — enforces regular review cadence, OR
+- **Hourly floor**: ≥ 60 min since last meta run — 强制定期反思，OR
 - ≥ 4 features each have ≥ 5 failed rounds, OR
 - Same gate_fail reason appears ≥ 3 times across different features, OR
 - User manually requests via `.evolve/META_PENDING` touch file
 
-After dispatching meta-mentor, orchestrator MUST call `mark_mentor_meta_ran()`
-to refresh the hourly stamp at `.evolve/.last_meta_run`.
+触发前 O **必须**先跑 `auto_cleanup_infra()`（清僵尸进程 / worktree prune /
+孤儿 lock / gzip 旧日志），给 Present Mentor 一个相对干净的现场。
+
+After dispatching all three mentors, orchestrator MUST call
+`mark_mentor_meta_ran()` to refresh the hourly stamp at
+`.evolve/.last_meta_run`.
 
 C's next round MUST run these checks and report `verification: applied` or
 `verification: ignored` in results.tsv summary. If ignored, B's next dispatch
