@@ -34,6 +34,9 @@ skipped for the rest of the run.  Human intervention required.
 - M may run bash commands to read logs, inspect state, and query DB / memU
   workspace for diagnosis — read-only.
 - M MUST NOT ask the user anything.  It makes a call and writes the advice.
+- M should keep the primary diagnosis focused on the dispatched feature,
+  but it MAY explicitly flag likely cross-feature patterns when the same
+  root cause appears to affect other features.
 
 ## Per-Run Flow
 
@@ -60,7 +63,38 @@ M reads all of the above, then:
    - (g) environmental issue (service down, skill not loaded, stale cache)
 2. Writes a concrete plan for the NEXT round only (not the next 5 rounds —
    keep the horizon short so we can re-evaluate).
-3. Splits the plan into `## Advice for B` and `## Advice for C` sections.
+3. Splits the plan into feature-specific actions plus any cross-feature
+   pattern that O may choose to route into separate infra work.
+
+## Advice template — required sections
+
+Every `mentor_advice_N.md` MUST have these sections:
+
+- `## Diagnosis` — what's the root cause of this feature's stuck state
+- `## For B (product fix)` — concrete file/line changes
+- `## For C (verification)` — what C should inspect next round
+- `## Cross-Feature Pattern` — if this same root cause likely affects
+  other features (e.g. same module, same infra bug), list them here with
+  one-line rationale. Format:
+- `## Verification` — MUST be the final section, with mechanical checks
+  and expected outputs
+
+```markdown
+- F01: [reason this feature likely hits the same bug]
+- F02: [reason]
+```
+
+Leave the section empty if the issue is truly feature-specific.
+
+## Verification block (mandatory)
+
+Every `mentor_advice_*.md` MUST end with a `## Verification` section
+containing:
+
+- ≥ 1 concrete `grep` / `curl` / DB query that produces a binary result
+- Expected output for "advice applied" vs "advice ignored"
+- C must run these checks and report `verification: applied` or
+  `verification: ignored`
 
 ## Output format (mandatory)
 
@@ -76,21 +110,25 @@ M reads all of the above, then:
 <150-400 words: what's actually going wrong, citing specific commits /
 rationales / gate issues by short hash or line reference>
 
-## Advice for B
+## For B (product fix)
 
 1. <one concrete action, imperative>
 2. ...
 
-## Advice for C
+## For C (verification)
 
-1. <one concrete action, e.g. "if log shows X, that counts as pass even if
-   rationale nits on Y">
+1. <what C should inspect in logs/UI/DB next round>
 2. ...
 
-## How to tell it worked
+## Cross-Feature Pattern
 
-<1-3 bullets describing the observable signal that the next round is on
-track — both B and C should check against this before declaring done>
+- <optional other feature id>: <one-line rationale>
+
+## Verification
+
+1. `grep` / `curl` / DB query: <command>
+   applied: <expected binary output>
+   ignored: <expected binary output>
 ```
 
 ## Interaction with B and C
@@ -110,5 +148,25 @@ track — both B and C should check against this before declaring done>
 - Run any feature's evaluator
 - Talk to the user
 - Modify loop control logic, adapter.py, eval.yml, expected_path.md
-- Give advice about features other than the one it was called for
+- Shift the primary diagnosis away from the dispatched feature
 - Re-run itself — each invocation is one-shot
+
+## Mentor-Meta Tier (2026-04-15)
+
+When dispatched with `--meta` flag or `.evolve/META_PENDING` exists, M
+operates in **cross-feature pattern-recognition mode**:
+
+- Reads `.evolve/results.tsv` across ALL features, not just one
+- Looks for patterns: same error msg in ≥2 features, same infra bug,
+  same failing dimension across features, regression clusters
+- Writes to `.evolve/META_ADVICE.md` (not per-feature)
+- Can recommend **framework / infra** changes, not just product
+
+Trigger criteria (orchestrator checks):
+- ≥ 4 features each have ≥ 5 failed rounds, OR
+- Same gate_fail reason appears ≥ 3 times across different features, OR
+- User manually requests via `.evolve/META_PENDING` touch file
+
+C's next round MUST run these checks and report `verification: applied` or
+`verification: ignored` in results.tsv summary. If ignored, B's next dispatch
+prompt inherits the unfulfilled verification list verbatim.
