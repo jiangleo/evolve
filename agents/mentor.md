@@ -162,10 +162,14 @@ operates in **cross-feature pattern-recognition mode**:
 - Writes to `.evolve/META_ADVICE.md` (not per-feature)
 - Can recommend **framework / infra** changes, not just product
 
-Trigger criteria (orchestrator checks):
+Trigger criteria (orchestrator checks `should_invoke_mentor_meta()`):
+- **Hourly floor**: ≥ 60 min since last meta run (or never run) — enforces regular review cadence, OR
 - ≥ 4 features each have ≥ 5 failed rounds, OR
 - Same gate_fail reason appears ≥ 3 times across different features, OR
 - User manually requests via `.evolve/META_PENDING` touch file
+
+After dispatching meta-mentor, orchestrator MUST call `mark_mentor_meta_ran()`
+to refresh the hourly stamp at `.evolve/.last_meta_run`.
 
 C's next round MUST run these checks and report `verification: applied` or
 `verification: ignored` in results.tsv summary. If ignored, B's next dispatch
