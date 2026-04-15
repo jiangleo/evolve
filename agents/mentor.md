@@ -153,6 +153,10 @@ rationales / gate issues by short hash or line reference>
 
 ## Mentor-Meta Tier: 时间三幕（2026-04-15 v2）
 
+**架构原则**：Mentor 只给 **O（Orchestrator）** 建议。不直接指挥 Codex / B / C / jhwleo。
+O 是唯一调度者，读完建议后自己决定派谁、干啥、以什么顺序。Codex 是通用助手，
+O 什么时候想调都可以，不需要 Mentor 授权。
+
 每次触发 meta（由 `should_invoke_mentor_meta()` 判定），**并行**分派三个
 Opus 实例，**context 相互隔离**，从三个时间视角各自给可执行建议：
 
