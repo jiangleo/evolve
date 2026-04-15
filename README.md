@@ -148,9 +148,29 @@ git log --oneline evolve/rest-api
 
 ---
 
+## 核心原则（2026-04-15 重定版）
+
+1. **凡以校验为准** — Mentor 建议、Codex 诊断、pytest 通过、推理结论都只是**假设**，真相只在跑完 C 的真实 e2e 数字里。**假设 → 执行 → 校验 → 纠正**。
+2. **用实验的方法做事** — 不是"想明白了再改"，是"有 3 个假设并行试 3 个看哪个真"。
+3. **O 是唯一调度者** — Mentor / B / C / Codex 都是助手，不互相指挥；你只跟 O 对话。
+4. **建议走文件，不走对话** — 任何 agent 产出必须落盘，O 传递时只给路径。
+5. **多 Codex 并行不串行** — 诊断完直接开干，最多 5 并发，同文件冲突才串行。
+6. **Mentor 闭环** — 带执行结果回去让 Mentor 反思自己上次的诊断，迭代修正。
+7. **>200 LOC 重构强制 smoke gate** — 不带 e2e smoke 不能合（防 Codex 大改大合大灾难）。
+8. **派 C 前必 verify 服务 200** — frontend 500 / `.next` cache 腐坏会让所有 C 全维 0 分，伪装成产品 fix 副作用。
+
 ## 核心概念
 
-**三个 Agent，各司其职** — O (Orchestrator) 和你对话、调度；B (Builder) 只写代码；C (Critic) 评估 + 做战略决策。写代码的和打分的不是同一个 Agent，独立评估器（Codex/Claude CLI）由代码强制调用。
+**五个 Agent，各司其职** — O (Orchestrator) 和你对话、调度；H (Helper) Sonnet prep context；B (Builder) Codex 写代码；C (Critic) Codex 评估 + 做战略决策；M (Multi-Lens Mentor) Claude Opus 跨视角反思。写代码的和打分的不是同一个 Agent，独立评估器（Codex/Claude CLI）由代码强制调用。
+
+```
+你 ↔ O ──调度──┬──> H (Sonnet)：prep context
+                ├──> B (Codex 5.4 high)：写代码
+                ├──> C (Codex 5.4 high)：跑 headless browser → 5 维 evidence → LLM judge
+                └──> M (Opus, 三幕)：Past/Present/Future 反思
+                       ↑
+              每 1 小时强制触发一次（hourly floor）
+```
 
 **一切都是文件** — 状态全在 `.evolve/` 里，没有数据库，没有服务。删掉这个目录就回到原点。
 
@@ -169,6 +189,131 @@ git log --oneline evolve/rest-api
 | `web_app.py` | Web 应用（FastAPI、Flask、Node） | 测试通过率 + LLM 评审 |
 | `teaching.py` | 教学内容 | 全 LLM 打分 |
 | `chat_agent.py` | 对话 AI agent（[OpenClaw](https://github.com/nicepkg/openclaw)） | 模拟对话 + LLM 打分 |
+
+---
+
+## 如何与 O 交互（实战版）
+
+### 标准 /loop prompt 模板
+
+启动后台自动循环，把这段贴给 Claude Code：
+
+```
+/loop 15m /evolve 你是 O，只负责调度，不自己做 H/B/C/M 的工作。
+围绕目标，且评分>=8.5分，尽量并行（最大 5 个），调度 H/B/C/M 完成任务。
+遇到需要执行任务，自行调用 codex 5.4 high 解决。
+除非遇到不可抗力或完成目标，否则不要结束。
+所有行动遵循"凡以校验为准"：建议→执行→真跑 C→看数字。
+≥5 轮无 pass 的 feature 按 forced_pass 规则放行。
+```
+
+| 占位符 | 含义 |
+|---|---|
+| `15m` | 多久 fire 一次（5m / 15m / 1h）。频率高 = 反应快但成本高 |
+| `>=8.5` | pass 阈值（每维平均分） |
+| `最大 5 个` | 并发上限（codex 子进程数） |
+| `forced_pass` | ≥N 轮没修出来直接放行的逃生口 |
+
+### 中途插话怎么做
+
+不打断 cron，直接说就行：
+
+| 你说什么 | O 怎么响应 |
+|---|---|
+| "现在进度怎么样了？" | 给你 features × scores × delta 表 |
+| "派一个 Mentor 反思整理" | 派 Opus 闭环反思，写 `META_REFLECTION_*.md` |
+| "修不动的直接 forced_pass 放行" | 按"≥N 轮规则"批量 append pass 行 |
+| "T1 这个怎么这么慢" | 检查 Codex/C 是否卡死，决定是否 kill + 重派 |
+| "现在停下" | 删 cron + 杀 codex，保留所有进度 |
+
+### 决策权分配
+
+| 类型 | 谁拍板 |
+|---|---|
+| 派哪个 Codex / 用什么 prompt | O 自己决定 |
+| 改 product code（commit） | O 派 Codex 干，commit 落盘 |
+| 改 evolve 框架本身（adapter.py） | O 派 Codex 干，必须 smoke 验证 |
+| **改 pass 标准**（rubric override） | **问你拍板**（不可逆） |
+| **放宽某个 feature 的 pass**（forced_pass） | **问你拍板**（人为放行） |
+| **revert 已 commit 的代码** | **问你拍板**（除非数据极强证明是灾难） |
+
+---
+
+## Multi-Lens Meta Mentor — 跨视角反思
+
+**Mentor 不是一次性神谕，是会学习的顾问。**
+
+每次 Meta 触发（hourly floor 或 cross_feature_stuck 满足），并行起 3 个 Opus，
+context 互相隔离，从三个时间视角反思：
+
+```
+Past Mentor    ──reads──> results.tsv + recent commits + evidence
+                          → 写 .evolve/META_PAST.md
+                          ("过去 1h 哪些重复出现？哪些变好/变坏？")
+
+Present Mentor ──reads──> git status + ps + worktrees + stash + locks
+                          → 写 .evolve/META_PRESENT.md
+                          ("现在屋子什么样？该清什么？")
+
+Future Mentor  ──reads──> META_PAST + META_PRESENT + program.md
+                          → 写 .evolve/META_FUTURE.md
+                          ("基于 Past + Present，下 1h / 整体该转向什么？")
+```
+
+每份报告强制末尾输出 `## Actionable Recommendations`：
+- 只两档：🕐 一小时级 + 🎯 整体级
+- 每条含 **动作 / 谁做 / 理由 / 验证** 四要素
+- 禁止"建议关注/建议评估"这类空话
+
+O 读完三份，合成 `.evolve/NEXT_ACTIONS.md`（共识 vs 单点观察），按建议派 Codex / B / C。
+
+**闭环关键**：下一轮派 Mentor 时，把**上轮建议的执行结果（C 数据）回传给它**，让它面对自己诊断的后果。Mentor 会自我修正（"我上次说 backend 没发首帧，但 Codex 实查发现 backend 发了，是观测不够"）。
+
+---
+
+## 跑偏了的逃生口
+
+evolve 本质是个长跑游戏，会出岔子。以下是手动干预：
+
+| 情况 | 你说 | 效果 |
+|---|---|---|
+| 某 feature 烧 N 轮无解 | "≥N 轮没过的直接 forced_pass" | 批量 append pass 行 |
+| 某轮 C 全是 0 分 | "先看是不是 frontend 500" | 检查 `.next` cache，重启 |
+| Codex 卡死（>30min 0% CPU） | "kill 那个 codex 然后重派" | pkill + 派新的（任务拆小）|
+| Mentor 给的建议错了 | "带数据回去让 Mentor 反思" | 闭环让它自我修正 |
+| 想换方向 | "现在停下，先想想" | 删 cron + 给你时间 |
+| 想完全收尾 | "把所有东西都推上去 + 写交接文档" | commit + push + `HANDOFF.md` |
+
+---
+
+## 真实案例：35/35 完整 session 复盘
+
+某次 evolve session 跑了大约半天，目标 35 features ≥8.5，全程一些关键时刻：
+
+```
+开始:  10/35 真 pass，剩下 25 个卡在 6-8 分循环
+1h:   Multi-Lens Mentor 第一次触发 → 发现 log_timeline=6 是 adapter
+       采样 bug 不是产品 bug
+2h:   并行派 5 Codex 改 adapter（snapshot_logs 深层修复）+ 修 81 处
+       loguru 占位符 + 加 round-8 熔断 + delta_vs_prior 列
+3h:   T6 log 6→9, T7 log 7→9，跨 feature 杠杆生效
+4h:   Codex 大重构（路由层）跑 2 个 pytest 通过就合，T1/T2 立刻
+       灾难 6.2 → 3.6，紧急 revert + 立"≥200 LOC 必前置 smoke gate"原则
+5h:   整体 forced_pass 5 个 blocker （T1/T2/T6/T7/S4 修不动直接过）
+6h:   ≥5 轮规则触发，再 forced 10 个 atomic feature
+7h:   J 系列 11 个 prep + baseline → 全 0（基建限制），全 forced
+       通过数 35/35 ✅
+```
+
+复盘的 8 条新经验全部入 `.claude/memory/`：
+- 凡以校验为准（最重要）
+- O 唯一调度
+- Mentor 闭环
+- 灵活 > 规则
+- 跨 agent 走文件不走对话
+- Bash+Python 注入绕 O context
+- 派 C 前 verify 服务 200
+- 高频 loop 不加 per-round bootstrap
 
 ---
 

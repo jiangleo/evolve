@@ -9,14 +9,19 @@ triggers:
 
 ## Overview
 
-Three agents, one loop: O (Orchestrator) → B (Builder) → C (Critic) → B → C → ... → Done
+Five agents, one loop: O (Orchestrator) → H (Helper, Sonnet) → B (Builder, Codex) → C (Critic, Codex) → M (Multi-Lens Mentor, Opus) → ... → Done
 
 - **Init**: This file. O guides user through 4 steps.
-- **Loop**: `loop.md`. B and C run automatically via `/loop 1m /evolve`.
+- **Loop**: `loop.md`. H/B/C/M run automatically via `/loop 1m /evolve`.
 
 Hard dependencies: Python 3.8+, Git. Everything else is declared by the project adapter.
 
-Agent definitions: `agents/orchestrator.md`, `agents/builder.md`, `agents/critic.md`.
+Agent definitions:
+- `agents/orchestrator.md` — O 调度（含**核心原则**：凡以校验为准 / 实验法 / O 唯一调度 etc）
+- `agents/helper.md` — H prep context
+- `agents/builder.md` — B 写代码（Codex 5.4 high）
+- `agents/critic.md` — C 评估（Codex + 5 dim LLM judge）
+- `agents/mentor.md` — M 三幕反思（Past/Present/Future Opus）+ 闭环
 
 ---
 

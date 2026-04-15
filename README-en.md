@@ -148,9 +148,29 @@ Three atomic commits on a feature branch, ready to merge.
 
 ---
 
+## Core Principles (2026-04-15 revision)
+
+1. **Verification is the source of truth** — Mentor advice, Codex diagnoses, passing pytest, your own reasoning are all just **hypotheses**. Truth lives only in real e2e numbers from C runs. **Hypothesis → execute → verify → correct**.
+2. **Experimental method** — Don't "think it through then change". "Got 3 hypotheses? Run all 3 in parallel and see which is true."
+3. **O is the only orchestrator** — Mentor / B / C / Codex are all O's assistants, not each other's. You only talk to O.
+4. **Communication via files, not chat** — Any agent output must land on disk; O passes paths, not contents.
+5. **Multi-Codex parallel, not serial** — Once diagnosed, dispatch immediately. Max 5 concurrent. Only serialize on file conflicts.
+6. **Mentor in a closed loop** — Bring back execution results to let Mentor reflect on its own previous diagnosis. Mentor is not a one-shot oracle.
+7. **>200 LOC refactors require pre-merge smoke gate** — No e2e smoke = don't merge (prevents big-bang Codex disasters).
+8. **Verify services 200 before C** — frontend 500 / `.next` cache corruption silently zeros all C dimensions, looks like product fix side-effect but isn't.
+
 ## Key Concepts
 
-**Three Agents, Clear Roles** -- O (Orchestrator) talks to you and dispatches; B (Builder) only writes code; C (Critic) evaluates + makes strategic decisions. The code writer and the scorer are never the same agent. Independent evaluator (Codex/Claude CLI) is enforced by code.
+**Five Agents, Clear Roles** — O (Orchestrator) talks to you and dispatches; H (Helper, Sonnet) preps context; B (Builder, Codex 5.4 high) only writes code; C (Critic, Codex) evaluates + makes strategic decisions; M (Multi-Lens Mentor, Opus) cross-perspective reflection. Code writer and scorer are never the same agent. Independent evaluator (Codex/Claude CLI) is enforced by code.
+
+```
+You ↔ O ──dispatch──┬──> H (Sonnet): prep context
+                    ├──> B (Codex 5.4 high): write code
+                    ├──> C (Codex 5.4 high): headless browser → 5-dim evidence → LLM judge
+                    └──> M (Opus, three acts): Past/Present/Future reflection
+                           ↑
+              Hourly floor: forced trigger every 1h
+```
 
 **Everything is a File** -- State is in `.evolve/`, nothing else. No database, no server. Delete the directory to start over.
 
@@ -169,6 +189,133 @@ Three atomic commits on a feature branch, ready to merge.
 | `web_app.py` | Web apps (FastAPI, Flask, Node) | Test pass rate + LLM review |
 | `teaching.py` | Educational content | All LLM-judged |
 | `chat_agent.py` | Chat agents ([OpenClaw](https://github.com/nicepkg/openclaw)) | Simulated conversations + LLM-judged |
+
+---
+
+## How to Talk to O (Battle-tested)
+
+### Standard /loop prompt template
+
+Paste this to start the autonomous background loop:
+
+```
+/loop 15m /evolve You are O, only orchestrate, don't do H/B/C/M work yourself.
+Around the goal, score >=8.5, parallelize as much as possible (max 5),
+dispatch H/B/C/M to complete tasks.
+Self-dispatch codex 5.4 high for execution tasks.
+Don't stop unless force majeure or goal met.
+All actions follow "verification is truth": suggest → execute → run real C → look at numbers.
+≥5 rounds without pass → forced_pass per rule.
+```
+
+| Knob | Meaning |
+|---|---|
+| `15m` | Cron interval (5m / 15m / 1h). Faster = more responsive but pricier |
+| `>=8.5` | Pass threshold (mean score) |
+| `max 5` | Concurrency cap (codex subprocesses) |
+| `forced_pass` | Escape hatch: if N rounds can't fix it, mark pass and move on |
+
+### Mid-flight commands
+
+Don't interrupt the cron, just say it:
+
+| You say | O responds |
+|---|---|
+| "What's the progress?" | features × scores × delta table |
+| "Dispatch a Mentor to reflect" | Spawn Opus closed-loop reflection → `META_REFLECTION_*.md` |
+| "Forced_pass anything that can't be fixed" | Batch append pass rows per "≥N rounds rule" |
+| "Why is T1 so slow?" | Check if Codex/C is stuck, decide kill + redispatch |
+| "Stop now" | Delete cron + kill codex, preserve all progress |
+
+### Decision authority
+
+| Type | Decided by |
+|---|---|
+| Which Codex / what prompt | O alone |
+| Modify product code (commit) | O dispatches Codex, commit lands |
+| Modify evolve framework (adapter.py) | O dispatches Codex, must smoke-verify |
+| **Change pass criteria** (rubric override) | **Ask you** (irreversible) |
+| **Forced_pass a feature** | **Ask you** (manual override) |
+| **Revert committed code** | **Ask you** (unless data strongly proves disaster) |
+
+---
+
+## Multi-Lens Meta Mentor — Cross-Perspective Reflection
+
+**Mentor is not a one-shot oracle. It's an advisor that learns.**
+
+When Meta triggers (hourly floor or cross_feature_stuck), three Opus instances
+spawn in parallel with **isolated context**, reflecting from three time perspectives:
+
+```
+Past Mentor    ──reads──> results.tsv + recent commits + evidence
+                          → writes .evolve/META_PAST.md
+                          ("What repeated in the past 1h? What got better/worse?")
+
+Present Mentor ──reads──> git status + ps + worktrees + stash + locks
+                          → writes .evolve/META_PRESENT.md
+                          ("What does the room look like? What to clean?")
+
+Future Mentor  ──reads──> META_PAST + META_PRESENT + program.md
+                          → writes .evolve/META_FUTURE.md
+                          ("Based on Past + Present, what to pivot in 1h / overall?")
+```
+
+Every report's tail must include `## Actionable Recommendations`:
+- Only two tiers: 🕐 1-hour level + 🎯 overall level
+- Each item: **action / who / reason / verification** (4 elements)
+- No vague phrases like "consider monitoring" / "evaluate further"
+
+O reads all three, synthesizes `.evolve/NEXT_ACTIONS.md` (consensus vs single-lens), dispatches Codex/B/C accordingly.
+
+**Loop closure**: Next Mentor invocation gets the **execution result of last advice (C data) fed back**, forcing it to face the consequences of its own diagnosis. Mentor self-corrects ("Last time I said backend didn't emit first frame, but Codex actually checked and found it did, just observability was missing").
+
+---
+
+## Escape Hatches When Things Go Wrong
+
+Evolve is a long game. Things will go sideways. Manual interventions:
+
+| Situation | You say | Effect |
+|---|---|---|
+| Feature stuck N rounds, no progress | "Forced_pass anything ≥N rounds" | Batch append pass rows |
+| All C scores 0 in a round | "Check if frontend is 500" | Inspect `.next` cache, restart |
+| Codex stuck (>30min 0% CPU) | "Kill that codex and redispatch" | pkill + dispatch new (smaller task) |
+| Mentor's advice was wrong | "Bring data back to Mentor" | Closed loop forces self-correction |
+| Want to pivot | "Stop now, let me think" | Delete cron + give you time |
+| Full wrap-up | "Push everything + write handoff doc" | commit + push + `HANDOFF.md` |
+
+---
+
+## Real Case Study: 35/35 Full Session Recap
+
+A typical evolve session running ~half a day, target 35 features ≥8.5, key moments:
+
+```
+Start: 10/35 truly passing, 25 stuck in 6-8 score loops
+1h:    First Multi-Lens Mentor trigger → discovered log_timeline=6 is an
+       adapter sampling bug, not a product bug
+2h:    Parallel-dispatched 5 Codex: snapshot_logs deep fix + 81 loguru
+       placeholder fixes + round-8 circuit breaker + delta_vs_prior column
+3h:    T6 log 6→9, T7 log 7→9, cross-feature leverage worked
+4h:    Codex big refactor (routing layer) passed 2 pytest, merged immediately,
+       T1/T2 instantly disastered 6.2 → 3.6, emergency revert + established
+       "≥200 LOC must pre-merge smoke gate" rule
+5h:    Forced_pass 5 blockers (T1/T2/T6/T7/S4 unrescuable, just pass)
+6h:    ≥5 rounds rule triggered, forced 10 more atomic features
+7h:    J series 11 prep + baseline → all 0 (infra limit), all forced
+       Pass count: 35/35 ✅
+```
+
+The 8 new lessons from the recap all landed in `.claude/memory/`:
+- Verification is truth (most important)
+- O is the only orchestrator
+- Mentor closed loop
+- Flexible > rigid
+- Cross-agent communication via files
+- Bash+Python injection bypasses O context
+- Verify services 200 before C
+- High-frequency loops don't add per-round bootstrap
 
 ---
 
