@@ -6,7 +6,7 @@
 **Define a goal. AI builds, evaluates, and iterates until it's met.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-70%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-210%20passed-brightgreen.svg)]()
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)]()
 
 A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill. You define what you want and what "good" looks like. AI writes the code, scores it, and fixes what doesn't pass -- on repeat, until everything does. Inspired by [Anthropic's harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) and [Karpathy's autoresearch](https://github.com/karpathy/autoresearch).
@@ -158,6 +158,8 @@ Three atomic commits on a feature branch, ready to merge.
 6. **Mentor in a closed loop** — Bring back execution results to let Mentor reflect on its own previous diagnosis. Mentor is not a one-shot oracle.
 7. **>200 LOC refactors require pre-merge smoke gate** — No e2e smoke = don't merge (prevents big-bang Codex disasters).
 8. **Verify services 200 before C** — frontend 500 / `.next` cache corruption silently zeros all C dimensions, looks like product fix side-effect but isn't.
+9. **Deterministic cascade first** — cheap build/lint/test/health gates run and fail fast before any LLM judging pays; all-zero rounds can no longer masquerade as product regressions.
+10. **Branch when stuck, don't waive** — ≥6 consecutive fails spawns 3 parallel candidates with distinct approaches; forced_pass unlocks only after all candidates fail (and still needs your approval); reports always split true passes from forced ones.
 
 ## Key Concepts
 
@@ -181,6 +183,9 @@ You ↔ O ──dispatch──┬──> H (Sonnet): prep context
 | `strategy.md` | C's strategic decisions: approach, trajectory, next action | C (overwritten each round) |
 | `results.tsv` | Full iteration history | B + C (append-only) |
 | `run.log` | All agent output | O + B + C (append-only) |
+| `{feature}/cascade_fail.md` | Cascade failure detail (which stage, output tail) | C (overwritten on each failure) |
+| `{feature}/branching.json` | Population branching state: round, candidates, winner | O (via population functions) |
+| `{feature}/merge_conflict.md` | Integration gate failure detail | O (via merge_feature) |
 
 **Adapters** -- Init generates a custom `adapter.py` for your project, telling Evolve how to run it. Three references are included:
 
@@ -189,6 +194,15 @@ You ↔ O ──dispatch──┬──> H (Sonnet): prep context
 | `web_app.py` | Web apps (FastAPI, Flask, Node) | Test pass rate + LLM review |
 | `teaching.py` | Educational content | All LLM-judged |
 | `chat_agent.py` | Chat agents ([OpenClaw](https://github.com/nicepkg/openclaw)) | Simulated conversations + LLM-judged |
+
+
+**Model configuration** — defaults: B/C via codex (gpt-5.4-high), H on Sonnet,
+M on Opus. For an all-Claude alternative (B=Fable 5 / C=Opus 4.8 / H=Sonnet 5)
+see [docs/all-claude-profile.md](./docs/all-claude-profile.md).
+Token-efficiency knobs: `EVOLVE_EVIDENCE_CAP` (previous-round evidence cap,
+default 6000 chars) and `EVOLVE_MANIFEST_MODEL` (manifest summary model,
+default Haiku); the manifest summary is fingerprint-cached — no-change rounds
+make zero LLM calls.
 
 ---
 
@@ -278,7 +292,7 @@ Evolve is a long game. Things will go sideways. Manual interventions:
 
 | Situation | You say | Effect |
 |---|---|---|
-| Feature stuck N rounds, no progress | "Forced_pass anything ≥N rounds" | Batch append pass rows |
+| Feature stuck N rounds, no progress | "Run a branching round on it" | ≥6 consecutive fails auto-triggers; forced_pass only unlocks after all candidates fail |
 | All C scores 0 in a round | "Check if frontend is 500" | Inspect `.next` cache, restart |
 | Codex stuck (>30min 0% CPU) | "Kill that codex and redispatch" | pkill + dispatch new (smaller task) |
 | Mentor's advice was wrong | "Bring data back to Mentor" | Closed loop forces self-correction |
@@ -366,7 +380,7 @@ The 8 new lessons from the recap all landed in `.claude/memory/`:
 ## Running Tests
 
 ```bash
-python -m pytest tests/ -v    # 70 tests, ~0.1s
+python -m pytest tests/ -v    # 210 tests, ~6s
 ```
 
 ## License

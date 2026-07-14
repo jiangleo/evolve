@@ -55,14 +55,19 @@ Your dispatch (`.evolve/{feature}/dispatch_C.md`) already contains all necessary
 
 ## Per-Run Flow
 
-1. Run adapter.run_checks() for deterministic scores
-2. Call independent evaluator (codex or claude CLI) — MANDATORY
+1. Run the deterministic cascade FIRST (`run_cascade` — includes the
+   implicit health check). `cascade_fail` → record the void round
+   (status=cascade_fail, scores "-", total 0, summary quoting the failing
+   stage) and STOP — no judge call. Never choose Pivot from a
+   cascade_fail alone; it is not evidence of a failed approach.
+2. Run adapter.run_checks() for deterministic scores
+3. Call independent evaluator (codex or claude CLI) — MANDATORY
    - Prefer the `## Evaluator Prompt` section from `.evolve/{feature}/dispatch_C.md` as codex CLI input; if insufficient, supplement with minimal source file reads
-3. Read trajectory via analyze_trajectory()
-4. Make strategic decision (strategy.md content is in your dispatch — no need to re-read the file)
-5. Write updated `.evolve/{feature}/strategy.md`
-6. Write eval output to `.evolve/{feature}/eval_codex.md`
-7. Append eval record to results.tsv (shared):
+4. Read trajectory via analyze_trajectory()
+5. Make strategic decision (strategy.md content is in your dispatch — no need to re-read the file)
+6. Write updated `.evolve/{feature}/strategy.md`
+7. Write eval output to `.evolve/{feature}/eval_codex.md`
+8. Append eval record to results.tsv (shared):
    ```python
    from prepare import append_result
    append_result(".evolve/results.tsv", {
@@ -72,6 +77,30 @@ Your dispatch (`.evolve/{feature}/dispatch_C.md`) already contains all necessary
        "summary": "<brief>"
    })
    ```
+
+### Pairwise verdicts (mandatory when a previous round exists)
+
+Your dispatch contains `## Previous Round Evidence`. For EVERY dimension,
+judge this round against it: `better | same | worse`. Record in
+results.tsv's `pairwise` column as `log:better/ui:same/db:worse`.
+Pass/fail stays on absolute scores vs threshold — pairwise only feeds
+trajectory analysis, which now trusts it over raw score deltas and marks
+contradictions (score up, pairwise worse) as `noisy`.
+
+### Judge Output Contract (mandatory)
+
+The judge's written output is billed twice — once as output, once as the
+next round's Previous Round Evidence input. Keep it structured and short:
+
+- exactly one line per dimension: `<dimension>: <score> — <rationale, ≤30 words>`
+- then one pairwise block, one line per dimension:
+  `<dimension>: better|same|worse — <one-line basis>`
+- then at most 3 summary lines
+- NEVER transcribe conversation content or paste raw logs — reference the
+  evidence file path instead (detailed grounds already live in the
+  evidence directory)
+
+Embed this contract in the Evaluator Prompt when invoking the judge CLI.
 
 ## Evidence-Driven Evaluation (project-specific extension)
 
@@ -108,7 +137,7 @@ Gets its own working directory for multi-step analysis. Internal implementation 
 
 ## Mentor Advice (if present in your dispatch)
 
-When `dispatch_C.md` contains a `## Mentor Advice` section at the top, a
+When `dispatch_C.md` contains a `## Mentor Advice` section included in your dispatch, a
 mentor (Claude Opus, second opinion) has reviewed the feature's full
 history after 3+ consecutive fails.  Treat the advice as overrides:
 
@@ -118,9 +147,12 @@ history after 3+ consecutive fails.  Treat the advice as overrides:
 - The "How to tell it worked" bullets become ADDITIONAL acceptance
   criteria on top of the fixed checklist.  If both the checklist and the
   mentor bullets are satisfied, record pass.
-- If this is mentor advice #3 and the feature still fails this round,
-  record `status=blocker` in results.tsv and write a BLOCKER section in
-  strategy.md.  The loop will skip this feature for the rest of the run.
+- If this is mentor advice #3 and the feature still fails this round, the
+  feature becomes BRANCHING-ELIGIBLE, not a blocker: O will run
+  should_branch()/spawn_candidates() (see loop.md 3.6). BLOCKER is
+  reached only when a branching round completed with no passing winner
+  AND the user declined forced_pass. Only then record `status=blocker`
+  in results.tsv and write the BLOCKER section in strategy.md.
 
 BLOCKER format in strategy.md:
 ```

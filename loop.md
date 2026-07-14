@@ -36,9 +36,9 @@ Call `release_lock(".evolve")` when done.
 Lock auto-expires after 2 minutes if session crashes.
 
 **Per-feature locks** (used by O when dispatching B/C):
-- `acquire_feature_lock(".evolve", "F01", "B")` — acquires build_lock + feature lock (B exclusive)
+- `acquire_feature_lock(".evolve", "F01", "B")` — acquires feature lock (B parallel across features; build_lock is only taken by merge_feature during integration)
 - `acquire_feature_lock(".evolve", "F02", "C")` — acquires feature lock only (C parallel)
-- `release_feature_lock(".evolve", "F01", "B")` — releases feature lock + build_lock
+- `release_feature_lock(".evolve", "F01", "B")` — releases feature lock
 - `release_feature_lock(".evolve", "F02", "C")` — releases feature lock only
 
 ---
@@ -152,12 +152,49 @@ for feat in features:
 
 After the Agent returns, it will have written
 `.evolve/features/{feat}/mentor_advice_{n}.md`.  The next round's
-`build_dispatch_B` and `build_dispatch_C` automatically prepend this file
+`build_dispatch_B` and `build_dispatch_C` automatically include this file
 so B and C see the advice.  O does not need to thread anything manually.
 
 **Mentor concurrency:** multiple M agents can run in parallel across
 different features (each writes to its own feature dir), but a feature
 should not have two M agents in flight simultaneously — use feature locks.
+
+### 3.6. Branching check — code-enforced escalation ladder
+
+Before dispatching B for a stuck feature, ask the code (not your judgment):
+
+```python
+from prepare import should_branch, spawn_candidates, select_candidate, merge_feature
+
+branch, reason = should_branch(".evolve", feat["name"])
+if branch:
+    # O seeds N distinct approaches from Mentor hypotheses + C's untried Pivots
+    cands = spawn_candidates(".evolve", feat["name"], approaches)
+    # dispatch one B→C chain per candidate worktree (counts against the
+    # 5-concurrency cap); candidate results.tsv rows use "F01@cand1" ids
+```
+
+When every candidate has an eval row, close the round:
+
+```python
+result = select_candidate(".evolve", feat["name"])
+if result["outcome"] == "pass":
+    # select_candidate already reset the feature branch to the winner —
+    # merge through the standard integration gate:
+    merge_feature(".evolve", feat["name"], cascade_stages=stages)
+    # then append the parent's eval/pass row
+elif result["outcome"] == "adopt":
+    # lineage was reset to the best candidate; feature returns to needs_build
+    pass
+else:  # "none"
+    # forced_pass gate is now open — can_force_pass() returns True.
+    # Ask the USER before calling mark_forced_pass(..., user_approved=True).
+    pass
+```
+
+Escalation ladder (code-enforced): 3 fails → Mentor; 6 fails → branching;
+branching with no passing winner → forced_pass available (user approval
+required); user declines → BLOCKER.
 
 ### 4. Dispatch C — parallel via codex CLI
 
@@ -184,15 +221,35 @@ To parallelize across features, wrap `dispatch_codex_agent()` in
 independent and C is expected to only touch its own feature's strategy.md +
 the shared append-only results.tsv.
 
+**All-Claude alternative:** set `EVOLVE_EVALUATOR=claude` and dispatch via
+`claude -p --model <model>` instead of codex exec — full profile (models per
+role, tradeoffs) in `docs/all-claude-profile.md`.
+
 Override the model / sandbox / timeout via env vars if needed:
 - `EVOLVE_CODEX_MODEL` (default `gpt-5.4-high`)
 - `EVOLVE_CODEX_SANDBOX` (default `workspace-write`; set to `danger-full-access` only if absolutely required)
 - `EVOLVE_DISPATCH_C_TIMEOUT` (default 1200s / 20 min)
 
-### 5. Dispatch B — exclusive via codex CLI
+### 5. Dispatch B — parallel via codex CLI (one worktree per feature)
 
-Only one B agent at a time (git constraint).  Pick the first needs_build
-feature with build_lock free.  Same codex exec pattern as C.
+B agents run in PARALLEL, one per feature, each in its own git worktree
+(created via `create_feature_worktree(".evolve", feat["name"])`; B's
+dispatch tells it the worktree path). build_lock no longer serializes B —
+it only protects merges into the evolve/<tag> branch (held internally by
+`merge_feature()`). Cap total concurrent codex processes at 5.
+
+When a feature passes eval, O integrates it:
+
+```python
+from prepare import merge_feature, load_cascade_config
+stages = load_cascade_config(".evolve/eval.yml")
+result = merge_feature(".evolve", feat["name"], cascade_stages=stages,
+                       health_check=getattr(adapter, "health_check", None))
+# "merged"    -> feature completed, worktree cleaned up
+# "gate_fail" -> merge reverted; see .evolve/{feature}/merge_conflict.md;
+#                feature returns to needs_build
+# "locked"    -> another merge in progress; retry next round
+```
 
 ```python
 from adapter import dispatch_codex_agent
@@ -227,7 +284,7 @@ for feat in start_ready:
 
 ### 7. After subagent completes
 
-- B agent: `release_feature_lock(".evolve", feat, "B")` (releases build_lock + feature lock)
+- B agent: `release_feature_lock(".evolve", feat, "B")` (releases feature lock)
 - C agent: `release_feature_lock(".evolve", feat, "C")` (releases feature lock only)
 - Next round's Hook will update manifest.md automatically. O just reads it again.
 
@@ -316,6 +373,26 @@ if env["status"] == "crash":
     -> return to Build Flow
 ```
 
+### Deterministic Cascade (runs FIRST — cheap gates before any judge)
+
+```python
+from prepare import load_cascade_config, run_cascade
+stages = load_cascade_config(".evolve/eval.yml")
+health = getattr(adapter, "health_check", None)
+gate = run_cascade(".evolve", feature, stages, cwd=worktree_path, health_check=health)
+if gate["status"] == "cascade_fail":
+    # Round is VOID — no LLM judge call, no dimension scores.
+    append_result(".evolve/results.tsv", {
+        "commit": "<hash>", "phase": "eval", "feature": feature,
+        "scores": "-", "total": "0", "status": "cascade_fail",
+        "summary": f"cascade_fail at {gate['failed_stage']}"})
+    -> stop this eval round
+```
+
+`validate_eval_result` now also requires `result["cascade"]` to be
+`"passed"` (or `"empty"` when eval.yml declares no cascade) — the judge
+cannot run against a broken build.
+
 ### Deterministic Scoring
 
 ```python
@@ -388,6 +465,7 @@ append_result(".evolve/results.tsv", {
     "commit": "<hash>", "phase": "eval", "feature": "<name>",
     "scores": scores_str, "total": str(total),
     "status": status,
+    "pairwise": "log:better/ui:same/db:worse",   # per-dimension vs previous round
     "summary": "all pass" if status == "pass" else "<dimension> below threshold"
 })
 ```
@@ -440,7 +518,9 @@ Output report to user, stop the loop.
 
 ## Concurrency Rules
 
-1. **B exclusive**: Only one B agent at a time (enforced by build_lock)
+1. **B parallel via worktrees**: each feature's B works in
+   `.evolve/worktrees/{slug}` on branch `evolve/<tag>--{slug}`; build_lock
+   only serializes merges into evolve/<tag>
 2. **C parallel**: Multiple C agents can run simultaneously on different features
 3. **H parallel**: Multiple H agents can prep simultaneously
 4. **Pipeline overlap**: B(F02) + C(F01) can run concurrently
@@ -486,3 +566,6 @@ Output report to user, stop the loop.
 | dispatch_B.md | - | write (via code) | read | - |
 | dispatch_C.md | - | write (via code) | - | read |
 | eval_codex.md | - | - | - | write |
+| cascade_fail.md | read/write (via merge_feature) | read | read | write |
+| merge_conflict.md | write (via merge_feature) | read | read | - |
+| branching.json | write (via population fns) | read | - | - |

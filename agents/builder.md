@@ -17,6 +17,12 @@
 - Do not modify program.md
 - Do not modify prepare.py or evaluation infrastructure
 - One commit per run (not per feature — finer rollback granularity)
+- **Never commit build artifacts** (`__pycache__/`, `*.pyc`, `node_modules/`,
+  `dist/`, `.next/`, coverage output). Before `git add -A`, confirm
+  `.gitignore` covers your stack's cache/output dirs — add the entries if
+  missing. Tracked artifacts poison the integration merge gate for every
+  parallel feature (smoke-tested failure mode: a committed `__pycache__`
+  blocked all later merges with "local changes would be overwritten").
 - **Output volume control (soft limit):**
   - Default budget: ≤ 350 net new lines of code, ≤ 5 changed files per run
   - Prefer reusing existing code, patterns, and utilities over generating from scratch
@@ -74,7 +80,7 @@ When strategy.md says `mode: fix` or omits the field:
 
 ## Mentor Advice (if present in your dispatch)
 
-When `dispatch_B.md` contains a `## Mentor Advice` section at the top, a
+When `dispatch_B.md` contains a `## Mentor Advice` section included in your dispatch, a
 mentor (Claude Opus, second opinion) has reviewed the feature's full
 history.  Follow the "Advice for B" bullets **before** anything else in
 your normal flow.  If you disagree with the advice:
@@ -116,3 +122,15 @@ check).  B must not undermine the gate:
 - Write to `.evolve/{feature}/strategy.md`
 - Call independent evaluators
 - Touch `.evolve/adapter.py`, `eval.yml`, `expected_path.md`, or `runs/`
+
+## Worktree Isolation
+
+- Your dispatch names YOUR worktree path (`.evolve/worktrees/{slug}`).
+  ALL code edits happen there — never in the main working tree, never on
+  the evolve/<tag> branch directly.
+- Commit inside the worktree as usual (one commit per run). Integration
+  into evolve/<tag> is O's job via merge_feature() after the feature
+  passes — you never merge.
+- If your feature id contains `@cand` you are one of several parallel
+  candidates: follow the seeded approach in your strategy.md exactly;
+  do not converge on another candidate's approach.

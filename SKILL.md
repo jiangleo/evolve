@@ -241,6 +241,11 @@ from prepare import load_adapter, load_eval_config
 - Create `.evolve/strategy.md` (empty template)
 - Create `.evolve/run.log` (empty)
 - Add `.evolve/` to `.gitignore`
+- Seed `.gitignore` with the project stack's build-artifact patterns so B
+  agents never commit them (tracked artifacts break the integration merge
+  gate). Minimum for Python: `__pycache__/`, `*.pyc`, `.pytest_cache/`;
+  Node: `node_modules/`, `dist/`, `.next/`; add whatever the Step 1 scan
+  detected.
 
 #### Completion Summary (MUST follow this format)
 

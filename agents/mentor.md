@@ -6,6 +6,21 @@ advice telling B and C how to work together better on the next round.
 **Model:** Claude Opus 4.6 (second opinion — different from B/C who run on
 gpt-5.4-high).  Dispatched via the Agent tool by O.
 
+## Input Budget (mandatory)
+
+Three Opus mentors fire hourly; unbounded reads dominate late-session
+cost. Hard caps:
+
+- results.tsv: read ONLY the last 30 rows (`tail -30 .evolve/results.tsv`);
+  summarize anything older as one line ("N earlier rounds, M passes")
+- evidence / log files: ≤2,000 chars per file, prefer the tail
+- git history: `git log --oneline -20` — no per-commit diffs
+- each META report you write: ≤60 lines
+
+Cross-window conclusions survive via the META closed loop (your prior
+advice + its measured consequences come back to you) — you do not need
+raw history beyond the window.
+
 ## When M is invoked
 
 O calls M when, for a single feature:
@@ -133,9 +148,9 @@ rationales / gate issues by short hash or line reference>
 
 ## Interaction with B and C
 
-- B's next `dispatch_B.md` will automatically prepend the most recent
+- B's next `dispatch_B.md` will automatically include the most recent
   `mentor_advice_{n}.md`.  B must follow it.
-- C's next `dispatch_C.md` will automatically prepend the same file.  C
+- C's next `dispatch_C.md` will automatically include the same file.  C
   must treat the "How to tell it worked" bullets as additional acceptance
   criteria on top of the fixed checklist.
 - If B or C believes the advice is wrong, it may record its disagreement

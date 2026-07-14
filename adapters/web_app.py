@@ -243,3 +243,19 @@ def _detect_app_start_cmd(project_dir: str, port: int) -> list[str] | None:
         except (json.JSONDecodeError, KeyError):
             pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# Slot Allocation (for parallel instances)
+# ---------------------------------------------------------------------------
+
+BASE_PORT = 8000
+
+
+def allocate_slot(n: int) -> dict:
+    """Env overrides for parallel instance n — one port per slot.
+
+    setup() must read PORT from the environment (os.environ.get("PORT",
+    str(BASE_PORT))) for this to take effect.
+    """
+    return {"PORT": str(BASE_PORT + n)}

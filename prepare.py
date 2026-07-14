@@ -9,6 +9,7 @@ Reference adapters in adapters/ are for Agent to read during Init, not imported 
 """
 
 import csv
+import hashlib
 import importlib.util
 import json
 import os
@@ -20,9 +21,11 @@ from pathlib import Path
 # Constants
 # ---------------------------------------------------------------------------
 
-HEADER_FIELDS = ["commit", "phase", "feature", "scores", "total", "status", "summary"]
+HEADER_FIELDS = ["commit", "phase", "feature", "scores", "total",
+                 "status", "summary", "pairwise"]
 VALID_PHASES = {"plan", "build", "eval"}
-VALID_STATUSES = {"keep", "pass", "fail", "crash", "reset"}
+VALID_STATUSES = {"keep", "pass", "fail", "crash", "reset",
+                  "cascade_fail", "forced"}
 
 HARD_LIMITS = {
     "max_rounds_total": 100,
@@ -31,6 +34,8 @@ HARD_LIMITS = {
     "max_consecutive_fails": 10,
     "max_flat_after_pivot": 3,
     "max_runtime_hours": 24,
+    "max_branching_rounds_per_feature": 1,
+    "candidates_per_branching": 3,
 }
 
 INDEPENDENT_EVALUATORS = ["agent", "codex", "claude"]
@@ -42,8 +47,22 @@ HELPER_MODEL = os.environ.get(
     "EVOLVE_HELPER_MODEL",
     os.environ.get("EVOLVE_HAIKU_MODEL", "claude-sonnet-4-6"),
 )
-HAIKU_MODEL = HELPER_MODEL  # alias for backward compat — remove once all refs migrated
+# Manifest summary is a <=300-token compression job — small-model work.
+# H's own agent stays on HELPER_MODEL; only this one call routes down.
+MANIFEST_MODEL = os.environ.get(
+    "EVOLVE_MANIFEST_MODEL", "claude-haiku-4-5-20251001")
 AGENT_MODEL = os.environ.get("EVOLVE_AGENT_MODEL", "gpt-5.4-high")
+
+# Previous Round Evidence cap (chars). 0 disables truncation.
+try:
+    EVIDENCE_CAP = int(os.environ.get("EVOLVE_EVIDENCE_CAP", "6000"))
+except ValueError:
+    EVIDENCE_CAP = 6000  # malformed env value must not break the engine
+
+# Dispatch section ordering: stable-content-first is prompt-cache
+# friendly (a volatile first section invalidates any prefix cache at
+# byte 1). Stability judged on the parsed filename's basename.
+STABLE_DISPATCH_FILES = {"program.md", "eval.yml", "spec.md", "adapter.py"}
 
 REQUIRED_ADAPTER_FUNCTIONS = ["setup", "run_checks", "teardown"]
 
@@ -218,55 +237,104 @@ _RUBRIC_RE = re.compile(r'^(\d+)\s*:\s*(.+)$')
 # Trajectory Analysis
 # ---------------------------------------------------------------------------
 
+def _pairwise_net(pw: str):
+    """Parse 'log:better/ui:same/db:worse' -> net int (+1 per better,
+    -1 per worse). Returns None if unparseable/absent."""
+    if not pw or pw.strip() in ("-", ""):
+        return None
+    net, seen = 0, False
+    for part in pw.split("/"):
+        verdict = part.split(":")[-1].strip().lower()
+        if verdict == "better":
+            net += 1
+            seen = True
+        elif verdict == "worse":
+            net -= 1
+            seen = True
+        elif verdict == "same":
+            seen = True
+    return net if seen else None
+
+
 def analyze_trajectory(results_tsv: str, feature: str, window: int = 3) -> dict:
     """
     Extract recent eval scores for a feature, determine trend.
 
     Returns:
-        {"trend": "rising"|"flat"|"falling"|"insufficient",
+        {"trend": "rising"|"flat"|"falling"|"insufficient"|"noisy",
          "scores": [float, ...], "rounds": int, "latest": float}
 
     Logic:
         - Fewer than window eval rows -> "insufficient"
-        - latest - earliest > +0.5 -> "rising"
-        - latest - earliest < -0.5 -> "falling"
-        - Otherwise -> "flat"
+        - cascade_fail rows are skipped entirely (void round: broken
+          build, not a real judgment; excluded from the score series)
+        - When pairwise verdicts (better/same/worse) are present for
+          every row in the window (except the first, which compares
+          against a pre-window round), they take precedence over the
+          raw score delta: net better/worse across the window decides
+          "rising"/"falling"/"flat"
+        - A sign contradiction between the score delta (latest -
+          earliest) and the pairwise net yields "noisy"
+        - Otherwise, falls back to the score delta alone:
+          latest - earliest > +0.5 -> "rising";
+          latest - earliest < -0.5 -> "falling"; else "flat"
     Only reads eval phase rows, ignores build/crash.
     """
     path = Path(results_tsv)
     if not path.exists():
-        return {"trend": "insufficient", "scores": [], "rounds": 0, "latest": 0.0}
+        return {"trend": "insufficient", "scores": [], "rounds": 0,
+                "latest": 0.0}
 
     with open(path, newline="") as f:
         rows = list(csv.DictReader(f, delimiter="\t"))
 
-    scores = []
+    entries = []   # (score, pairwise_net_or_None)
     for r in rows:
-        if r.get("phase") == "eval" and r.get("feature") == feature:
-            try:
-                scores.append(float(r["total"]))
-            except (ValueError, TypeError, KeyError):
-                continue
+        if r.get("phase") != "eval" or r.get("feature") != feature:
+            continue
+        if r.get("status") == "cascade_fail":
+            continue   # void round: broken build, not a real judgment
+        try:
+            score = float(r["total"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        entries.append((score, _pairwise_net(r.get("pairwise", ""))))
 
+    scores = [e[0] for e in entries]
     if len(scores) < window:
-        return {
-            "trend": "insufficient",
-            "scores": scores,
-            "rounds": len(scores),
-            "latest": scores[-1] if scores else 0.0,
-        }
+        return {"trend": "insufficient", "scores": scores,
+                "rounds": len(scores),
+                "latest": scores[-1] if scores else 0.0}
 
-    recent = scores[-window:]
-    diff = recent[-1] - recent[0]
+    recent = entries[-window:]
+    recent_scores = [e[0] for e in recent]
+    diff = recent_scores[-1] - recent_scores[0]
 
-    if diff > 0.5:
-        trend = "rising"
-    elif diff < -0.5:
-        trend = "falling"
+    # Pairwise verdicts are round-vs-previous-round; the first window row's
+    # verdict compares against a pre-window round, so use rounds 2..window.
+    nets = [e[1] for e in recent[1:]]
+    if all(n is not None for n in nets) and nets:
+        pairwise_sum = sum(nets)
+        contradiction = (diff > 0.5 and pairwise_sum < 0) or \
+                        (diff < -0.5 and pairwise_sum > 0)
+        if contradiction:
+            trend = "noisy"
+        elif pairwise_sum > 0:
+            trend = "rising"
+        elif pairwise_sum < 0:
+            trend = "falling"
+        else:
+            trend = "flat"
     else:
-        trend = "flat"
+        if diff > 0.5:
+            trend = "rising"
+        elif diff < -0.5:
+            trend = "falling"
+        else:
+            trend = "flat"
 
-    return {"trend": trend, "scores": recent, "rounds": len(scores), "latest": recent[-1]}
+    return {"trend": trend, "scores": recent_scores,
+            "rounds": len(scores), "latest": recent_scores[-1]}
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +386,16 @@ def should_stop(results_tsv: str, feature: str) -> tuple:
 # ---------------------------------------------------------------------------
 
 def get_evaluator() -> str | None:
-    """Try each evaluator in order, return first available CLI command. None = unavailable."""
+    """Return the independent evaluator CLI to use. None = unavailable.
+
+    EVOLVE_EVALUATOR forces a specific CLI (e.g. "claude" for the all-Claude
+    profile, or when a higher-priority CLI is installed but broken). The
+    forced CLI must exist on PATH; otherwise None. Without the override,
+    tries INDEPENDENT_EVALUATORS in priority order.
+    """
+    forced = os.environ.get("EVOLVE_EVALUATOR")
+    if forced:
+        return forced if shutil.which(forced) is not None else None
     for name in INDEPENDENT_EVALUATORS:
         if shutil.which(name) is not None:
             return name
@@ -326,9 +403,21 @@ def get_evaluator() -> str | None:
 
 
 def validate_eval_result(result: dict) -> None:
-    """Validate that an independent evaluator was used. Raises ValueError if not."""
+    """Validate an eval round result. Raises ValueError if invalid.
+
+    Enforced invariants (AI cannot skip these):
+    1. An independent evaluator was called.
+    2. The deterministic cascade ran and passed ("passed"), or the project
+       declares no cascade in eval.yml ("empty"). A cascade_fail round must
+       be recorded with status=cascade_fail and never reaches the judge.
+    """
     if not result.get("independent_evaluator_used"):
         raise ValueError("Eval invalid: no independent evaluator was called")
+    if result.get("cascade") not in ("passed", "empty"):
+        raise ValueError(
+            "Eval invalid: deterministic cascade did not pass "
+            "(expected result['cascade'] in {'passed', 'empty'})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -336,16 +425,32 @@ def validate_eval_result(result: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def append_result(results_tsv: str, row: dict) -> None:
-    """Append one row to results.tsv. Creates file with header if it doesn't exist."""
+    """Append one row to results.tsv. Creates file with header if needed.
+
+    Header-adaptive for backward compatibility: appending to an existing
+    file uses THAT file's header (old 7-column files keep their shape);
+    new files get the full HEADER_FIELDS including 'pairwise'.
+    """
     path = Path(results_tsv)
     write_header = not path.exists() or path.stat().st_size == 0
 
+    if write_header:
+        fieldnames = HEADER_FIELDS
+    else:
+        with open(path, newline="") as f:
+            first = f.readline().rstrip("\r\n")
+        fieldnames = first.split("\t") if first else HEADER_FIELDS
+
+    out = dict(row)
+    if "pairwise" in fieldnames:
+        out.setdefault("pairwise", "-")
+
     with open(path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=HEADER_FIELDS, delimiter="\t",
+        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t",
                                 extrasaction="ignore")
         if write_header:
             writer.writeheader()
-        writer.writerow(row)
+        writer.writerow(out)
 
 
 def read_progress(results_tsv: str) -> dict:
@@ -377,6 +482,7 @@ def read_progress(results_tsv: str) -> dict:
         "base_commit": None,
         "total_iterations": len(rows),
         "completed_features": [],
+        "forced_features": [],
         "skipped_features": [],
         "last_pass_commit": None,
         "feature_iterations": 0,
@@ -393,10 +499,16 @@ def read_progress(results_tsv: str) -> dict:
         feature = row.get("feature", "-")
         commit = row.get("commit", "")
 
+        if feature != "-" and "@cand" in feature:
+            continue   # candidate rows never complete a spec feature
+
         if phase == "eval" and status == "pass":
             if feature not in result["completed_features"] and feature != "-":
                 result["completed_features"].append(feature)
             result["last_pass_commit"] = commit
+        elif phase == "eval" and status == "forced":
+            if feature not in result["forced_features"] and feature != "-":
+                result["forced_features"].append(feature)
 
     last = rows[-1]
     last_phase = last.get("phase", "")
@@ -449,6 +561,8 @@ def read_progress(results_tsv: str) -> dict:
     elif last_phase == "eval" and last_status == "fail":
         result["phase"] = "build"
         result["current_feature"] = last_feature if last_feature != "-" else None
+    elif last_phase == "eval" and last_status == "forced":
+        result["phase"] = "build"
     else:
         result["phase"] = "init"
 
@@ -481,29 +595,38 @@ def generate_report(results_tsv: str) -> str:
     # Group by feature
     features = {}  # preserves insertion order (Python 3.7+)
     for row in rows:
-        feat = row.get("feature", "-")
-        if feat == "-":
+        raw_feat = row.get("feature", "-")
+        if raw_feat == "-":
             continue
+        feat = raw_feat.split("@cand")[0]   # fold candidate rows into parent
+        is_candidate = raw_feat != feat
         if feat not in features:
             features[feat] = {"rows": [], "final_status": None,
                               "final_total": None, "pass_round": None}
         features[feat]["rows"].append(row)
+        if is_candidate:
+            # Candidate eval/pass rows only feed the iteration record;
+            # they must never flip the parent's final status before the
+            # winning branch is actually merged.
+            continue
         features[feat]["final_status"] = row.get("status")
         if row.get("total", "-") != "-":
             features[feat]["final_total"] = row.get("total")
         if row.get("phase") == "eval" and row.get("status") == "pass":
             features[feat]["pass_round"] = sum(
-                1 for r in features[feat]["rows"] if r.get("phase") == "eval"
+                1 for r in features[feat]["rows"]
+                if r.get("phase") == "eval" and "@cand" not in r.get("feature", "")
             )
 
     completed = [f for f, i in features.items() if i["final_status"] == "pass"]
+    forced = [f for f, i in features.items() if i["final_status"] == "forced"]
     skipped = [f for f, i in features.items() if i["final_status"] == "skip"]
     total_features = len(features)
 
     # Find current feature (last non-completed, non-skipped)
     current_feat = None
     for feat, info in features.items():
-        if info["final_status"] not in ("pass", "skip"):
+        if info["final_status"] not in ("pass", "forced", "skip"):
             current_feat = feat
 
     # Build report
@@ -512,7 +635,8 @@ def generate_report(results_tsv: str) -> str:
     # Status line
     if not features:
         lines.append("## Status: Waiting to start")
-    elif len(completed) + len(skipped) == total_features and total_features > 0:
+    elif len(completed) + len(forced) + len(skipped) == total_features \
+            and total_features > 0:
         lines.append(f"## Status: Complete -- Round {total_rounds} | All passed")
     else:
         lines.append(f"## Status: In Progress -- Round {total_rounds}")
@@ -521,7 +645,13 @@ def generate_report(results_tsv: str) -> str:
 
     # Overview
     lines.append("## Overview")
-    if current_feat:
+    if forced:
+        lines.append(f"  Passed: {len(completed)} true + {len(forced)} "
+                     f"forced / {total_features} features"
+                     + (f" | Current: {current_feat} (best "
+                        f"{features[current_feat]['final_total'] or '-'})"
+                        if current_feat else ""))
+    elif current_feat:
         best = features[current_feat]["final_total"] or "-"
         lines.append(f"  Passed: {len(completed)}/{total_features} features | "
                      f"Current: {current_feat} (best {best})")
@@ -539,6 +669,8 @@ def generate_report(results_tsv: str) -> str:
                 rnd = info["pass_round"] or "?"
                 score = info["final_total"] or "-"
                 lines.append(f"  \u2713 {feat}    -- passed round {rnd} ({score})")
+            elif info["final_status"] == "forced":
+                lines.append(f"  \u2691 {feat}    -- forced (waived, not a true pass)")
             elif info["final_status"] == "skip":
                 lines.append(f"  \u2717 {feat}    -- skipped")
             elif feat == current_feat:
@@ -618,7 +750,7 @@ def _haiku_summarize(status_text: str, raw_files: dict) -> str:
             files_text += f"\n--- {name} ---\n{content}\n"
 
         response = client.messages.create(
-            model=HAIKU_MODEL,
+            model=MANIFEST_MODEL,
             max_tokens=300,
             messages=[{"role": "user", "content": (
                 "Summarize this evolve run state for the orchestrator to decide next dispatch.\n\n"
@@ -659,9 +791,14 @@ def build_manifest(evolve_dir: str) -> str:
     # Parallel feature scan
     features = scan_all_features(evolve_dir)
 
-    # Build lock status
+    # Build lock status — probe WITHOUT holding: acquiring for the status
+    # line and never releasing poisoned merges for BUILD_LOCK_STALE_SECONDS.
     bl = acquire_build_lock(evolve_dir)
-    build_lock_status = "free" if bl["acquired"] else f"locked ({bl['reason']})"
+    if bl["acquired"]:
+        release_build_lock(evolve_dir, bl["token"])
+        build_lock_status = "free"
+    else:
+        build_lock_status = f"locked ({bl['reason']})"
 
     # Structured status
     status_lines = [
@@ -720,8 +857,40 @@ def build_manifest(evolve_dir: str) -> str:
         log_lines = log_path.read_text().strip().split("\n")
         raw_files["run.log (tail)"] = "\n".join(log_lines[-30:])
 
-    # Call Haiku
-    summary = _haiku_summarize(status_text, raw_files)
+    # Summary caching: the summary narrates raw_files + (round, phase,
+    # feature). Volatile lock/timing state (build_lock, should_stop) can
+    # reach the summarizer via status_text without changing the
+    # fingerprint — acceptable because the authoritative Status section
+    # directly above is always recomputed fresh. The
+    # structured sections above are ALWAYS recomputed — only the LLM call
+    # is skipped on a fingerprint hit.
+    spec_path = evolve_path / "spec.md"
+    fingerprint_src = json.dumps({
+        "round": progress["total_iterations"],
+        "phase": progress["phase"],
+        "feature": feature,
+        "spec": spec_path.read_text() if spec_path.exists() else "",
+        "raw": raw_files,
+    }, sort_keys=True)
+    fingerprint = hashlib.sha256(fingerprint_src.encode()).hexdigest()
+
+    cache_path = evolve_path / "manifest_summary.json"
+    summary = None
+    if cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text())
+            if isinstance(cached, dict) and \
+                    cached.get("fingerprint") == fingerprint:
+                summary = cached.get("summary")
+        except (json.JSONDecodeError, OSError):
+            pass
+    if summary is None:
+        summary = _haiku_summarize(status_text, raw_files)
+        try:
+            cache_path.write_text(json.dumps(
+                {"fingerprint": fingerprint, "summary": summary}))
+        except OSError:
+            pass
 
     manifest = (
         f"# Evolve Manifest\n\n"
@@ -803,6 +972,23 @@ def _extract_section(content: str, section_name: str) -> str:
     return "\n".join(lines[start_idx:end_idx]).rstrip()
 
 
+def _truncate_evidence(content: str, cap: int) -> str:
+    """Head+tail truncation for previous-round judge output.
+
+    Judge files put dimension scores at the head and conclusions/rationale
+    at the tail; the middle is process transcript. Keep the first 1,000
+    chars + the last (cap - 1000), with an explicit marker. cap <= 0
+    disables truncation.
+    """
+    if cap <= 0 or len(content) <= cap:
+        return content
+    head_len = min(1000, cap // 2)
+    tail_len = cap - head_len
+    head, tail = content[:head_len], content[-tail_len:]
+    return (f"{head}\n\n[... truncated {len(content) - cap} chars ...]\n\n"
+            f"{tail}")
+
+
 def prepare_dispatch(evolve_dir: str, target: str, file_list: list,
                      note: str = "", feature: str = None) -> str:
     """
@@ -829,12 +1015,16 @@ def prepare_dispatch(evolve_dir: str, target: str, file_list: list,
     else:
         output_dir = evolve_path
 
+    def _is_stable(file_spec: str) -> bool:
+        filename, _ = _parse_file_spec(file_spec)
+        return Path(filename).name in STABLE_DISPATCH_FILES
+
+    ordered_specs = ([s for s in file_list if _is_stable(s)] +
+                     [s for s in file_list if not _is_stable(s)])
+
     sections = [f"# Dispatch: {target}\n"]
 
-    if note:
-        sections.append(f"## Note from O\n{note}\n")
-
-    for file_spec in file_list:
+    for file_spec in ordered_specs:
         filename, content_slice = _parse_file_spec(file_spec)
 
         filepath = evolve_path / filename
@@ -857,6 +1047,26 @@ def prepare_dispatch(evolve_dir: str, target: str, file_list: list,
                 content = "\n".join(lines[-50:])
 
         sections.append(f"## {file_spec}\n{content}\n")
+
+    # Volatile sections LAST (cache-friendly ordering)
+    if note:
+        sections.append(f"## Note from O\n{note}\n")
+
+    # C only: previous round's judge output enables pairwise verdicts.
+    if target == "C" and feature:
+        for eval_name in ("eval_codex.md", "eval_agent.md", "eval_claude.md"):
+            prev_eval = evolve_path / feature / eval_name
+            if prev_eval.exists():
+                sections.append(
+                    "## Previous Round Evidence\n"
+                    "For EVERY dimension, judge this round against the "
+                    "previous one below and emit `pairwise: "
+                    "better|same|worse` per dimension (recorded in "
+                    "results.tsv's pairwise column). Pass/fail stays on "
+                    "absolute scores; pairwise feeds trajectory analysis.\n\n"
+                    f"{_truncate_evidence(prev_eval.read_text(), EVIDENCE_CAP)}\n"
+                )
+                break
 
     dispatch_path = output_dir / f"dispatch_{target}.md"
     dispatch_path.write_text("\n".join(sections))
@@ -1054,17 +1264,22 @@ def scan_all_features(evolve_dir: str) -> list[dict]:
                 1 for r in feat_data if r.get("phase") == "eval"
             )
 
-            # Count consecutive fails
+            # Count consecutive fails. Real round cadence is
+            # build/keep -> eval/fail every round, so a build between
+            # fails does not end the fail streak -- only eval/pass or
+            # status=reset do (matches read_progress's counting semantics).
             for r in reversed(feat_data):
+                if r.get("status") == "reset":
+                    break
                 if r.get("phase") == "eval" and r.get("status") == "fail":
                     info["consecutive_fails"] += 1
                 elif r.get("phase") == "eval" and r.get("status") == "pass":
                     break
                 elif r.get("phase") == "build" and r.get("status") == "keep":
-                    break
+                    continue
 
             # Determine state
-            if last_phase == "eval" and last_status == "pass":
+            if last_phase == "eval" and last_status in ("pass", "forced"):
                 info["state"] = "completed"
             elif last_phase == "build" and last_status == "keep":
                 info["state"] = "needs_eval"
@@ -1074,6 +1289,16 @@ def scan_all_features(evolve_dir: str) -> list[dict]:
                 info["state"] = "needs_build"
             else:
                 info["state"] = "needs_build"
+
+        # Branching round in flight overrides build/eval states
+        branching_json = evolve_path / feat_name / "branching.json"
+        if info["state"] != "completed" and branching_json.exists():
+            try:
+                bstate = json.loads(branching_json.read_text())
+                if not bstate.get("completed"):
+                    info["state"] = "branching"
+            except (json.JSONDecodeError, OSError):
+                pass
 
         # Check per-feature lock
         feat_lock = evolve_path / feat_name / "lock"
@@ -1102,6 +1327,11 @@ def acquire_build_lock(evolve_dir: str) -> dict:
     Acquire the global B-exclusive lock. Only one B agent can run at a time.
     Uses atomic file creation (O_CREAT | O_EXCL) to prevent TOCTOU races.
 
+    Uses BUILD_LOCK_STALE_SECONDS (not LOCK_STALE_SECONDS) because this
+    lock guards merge_feature's integration cascade, which can run for
+    minutes -- a 120s staleness window would let a second acquire steal
+    the lock mid-merge.
+
     Returns {"acquired": True/False, "reason": ..., "feature": ..., "token": ...}.
     """
     lock_path = Path(evolve_dir) / "build_lock"
@@ -1111,7 +1341,7 @@ def acquire_build_lock(evolve_dir: str) -> dict:
         try:
             data = json.loads(lock_path.read_text())
             elapsed = time.time() - data.get("heartbeat", 0)
-            if elapsed < LOCK_STALE_SECONDS:
+            if elapsed < BUILD_LOCK_STALE_SECONDS:
                 return {
                     "acquired": False,
                     "reason": f"B agent active on {data.get('feature', '?')} "
@@ -1168,28 +1398,18 @@ def acquire_feature_lock(evolve_dir: str, feature: str, agent: str) -> dict:
     Acquire per-feature lock for B or C agent.
     Uses atomic file creation to prevent TOCTOU races.
 
-    Also acquires global build_lock if agent is "B".
+    Per-feature isolation only: this does NOT touch the global build_lock.
+    B and C agents alike take only the per-feature lock, so multiple B
+    agents can run in parallel across different features (each in its own
+    worktree). The build_lock is merge_feature's concern — it serializes
+    only the true critical section (merging a feature branch into
+    evolve/<tag>), not feature dispatch.
     Returns {"acquired": True/False, "reason": ..., "token": ...}.
     """
     # Sanitize feature name to prevent path traversal
     if ".." in feature or feature.startswith("/"):
         return {"acquired": False, "reason": f"Invalid feature name: {feature!r}",
                 "token": None}
-
-    build_token = None
-    if agent == "B":
-        bl = acquire_build_lock(evolve_dir)
-        if not bl["acquired"]:
-            return {"acquired": False, "reason": bl["reason"], "token": None}
-        build_token = bl["token"]
-        # Update build_lock with feature info
-        lock_path = Path(evolve_dir) / "build_lock"
-        try:
-            data = json.loads(lock_path.read_text())
-            data["feature"] = feature
-            lock_path.write_text(json.dumps(data))
-        except (json.JSONDecodeError, OSError):
-            pass
 
     feat_dir = Path(evolve_dir) / feature
     feat_dir.mkdir(parents=True, exist_ok=True)
@@ -1201,8 +1421,6 @@ def acquire_feature_lock(evolve_dir: str, feature: str, agent: str) -> dict:
             data = json.loads(lock_path.read_text())
             elapsed = time.time() - data.get("heartbeat", 0)
             if elapsed < LOCK_STALE_SECONDS:
-                if build_token:
-                    release_build_lock(evolve_dir, build_token)
                 return {
                     "acquired": False,
                     "reason": f"{data.get('agent', '?')} active on {feature}",
@@ -1219,7 +1437,6 @@ def acquire_feature_lock(evolve_dir: str, feature: str, agent: str) -> dict:
         os.write(fd, json.dumps({
             "pid": os.getpid(),
             "token": token,
-            "build_token": build_token,
             "agent": agent,
             "feature": feature,
             "heartbeat": time.time(),
@@ -1227,8 +1444,6 @@ def acquire_feature_lock(evolve_dir: str, feature: str, agent: str) -> dict:
         os.close(fd)
         return {"acquired": True, "reason": None, "token": token}
     except FileExistsError:
-        if build_token:
-            release_build_lock(evolve_dir, build_token)
         return {
             "acquired": False,
             "reason": f"Lost feature lock race on {feature}",
@@ -1239,7 +1454,11 @@ def acquire_feature_lock(evolve_dir: str, feature: str, agent: str) -> dict:
 def release_feature_lock(evolve_dir: str, feature: str, token: str = None) -> None:
     """
     Release per-feature lock. Verifies ownership via token if provided.
-    Also releases build_lock if this was a B agent (using stored build_token).
+
+    Backward compat: lock files written by older sessions may still carry a
+    stored build_token (from when acquire_feature_lock took the global
+    build_lock for agent "B"). If present, it is released here too. New
+    locks written by the current acquire_feature_lock never set build_token.
     """
     feat_lock = Path(evolve_dir) / feature / "lock"
     if not feat_lock.exists():
@@ -1268,6 +1487,7 @@ def release_feature_lock(evolve_dir: str, feature: str, token: str = None) -> No
 # ---------------------------------------------------------------------------
 
 LOCK_STALE_SECONDS = 120  # 2 minutes -- if heartbeat older than this, lock is stale
+BUILD_LOCK_STALE_SECONDS = 1800  # merge cascade can run for minutes; steal only after 30 min
 
 
 def acquire_lock(evolve_dir: str) -> dict:
@@ -1314,6 +1534,14 @@ def acquire_lock(evolve_dir: str) -> dict:
     if not started_at_path.exists():
         started_at_path.write_text(str(lock_data["started"]))
 
+    # Best-effort worktree debris cleanup (crashed sessions leave none).
+    # Must never block the loop -- swallow everything.
+    try:
+        from worktree import prune_stale_worktrees
+        prune_stale_worktrees(evolve_dir)
+    except Exception:
+        pass
+
     return {"acquired": True, "reason": None, "owner": lock_data}
 
 
@@ -1338,3 +1566,17 @@ def release_lock(evolve_dir: str) -> None:
         lock_path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Re-exports (new modules; imported at end of file to avoid circular imports)
+# ---------------------------------------------------------------------------
+
+from cascade import load_cascade_config, run_cascade, DEFAULT_STAGE_TIMEOUT  # noqa: E402,F401
+from worktree import (create_feature_worktree, remove_feature_worktree,  # noqa: E402,F401
+                      merge_feature, prune_stale_worktrees, feature_slug,
+                      feature_branch, worktree_path, base_branch)
+from population import (should_branch, spawn_candidates, select_candidate,  # noqa: E402,F401
+                        can_force_pass, mark_forced_pass, parent_feature,
+                        candidate_feature_id,
+                        BRANCH_AFTER_CONSECUTIVE_FAILS)

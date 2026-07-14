@@ -126,3 +126,20 @@ Agent(prompt="读 .evolve/META_ADVICE.md 的 Section 2，执行里面的 Actiona
 - Make strategic decisions about approach（那是 Mentor 建议 + O 决策）
 - Modify `.evolve/adapter.py` or `prepare.py`
 - Re-read files that are already in context
+
+## Escalation Ladder（代码强制，不是建议）
+
+卡住的 feature 走阶梯，每一步由代码判定，O 不凭感觉：
+
+1. `consecutive_fails >= 3` → 派 Mentor（现行为不变）
+2. `should_branch()` 返回 True（≥6 连败且预算未用完）→ `spawn_candidates()`
+   派 3 个候选，每个 worktree 一条 B→C 链，方案必须彼此不同（来自 Mentor
+   假设 + C 未试过的 Pivot）
+3. 候选全部评完 → `select_candidate()` 关轮：pass 直接合入；adopt 换谱系
+   重来；none → forced_pass 门打开
+4. **只有 `can_force_pass()` 为 True 时才允许问用户 forced_pass**；
+   `mark_forced_pass()` 是唯一入口，绕过会 raise
+5. 用户拒绝 forced_pass → BLOCKER（终态跳过）
+
+报告里 forced 和真 pass 分开展示（`M true + K forced / T`），永远不把
+弃权说成达标。

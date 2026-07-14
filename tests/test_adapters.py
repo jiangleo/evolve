@@ -133,3 +133,17 @@ class TestChatAgentAdapter:
         assert "exam stress" in prompt
         assert "anxious" in prompt
         assert "Buddy" in prompt
+
+
+def test_web_app_allocate_slot():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "web_app_adapter",
+        str(Path(__file__).parent.parent / "adapters" / "web_app.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    env0 = mod.allocate_slot(0)
+    env2 = mod.allocate_slot(2)
+    assert env0["PORT"] != env2["PORT"]
+    assert int(env2["PORT"]) == int(env0["PORT"]) + 2

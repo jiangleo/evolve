@@ -79,3 +79,37 @@ def teardown(info: dict) -> None:
     Examples: kill a web server process, remove temp files.
     """
     raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
+# Optional Functions
+# ---------------------------------------------------------------------------
+
+def allocate_slot(n: int) -> dict:
+    """
+    OPTIONAL. Environment overrides for running parallel instance n.
+
+    With worktree isolation, several copies of the project may run
+    simultaneously (parallel Builders / Critics / candidate branches).
+    Adapters whose setup() binds shared resources (ports, db files,
+    directories) implement this to keep instances from colliding:
+
+        def allocate_slot(n: int) -> dict:
+            return {"PORT": str(8000 + n)}
+
+    setup() should honor the returned env vars. Adapters that do not
+    define allocate_slot are declared conflict-free (e.g. content/teaching
+    adapters that only write to their own worktree).
+    """
+    return {}
+
+
+def health_check() -> tuple:
+    """
+    OPTIONAL. Return (ok: bool, detail: str).
+
+    When defined, the orchestrator passes it to run_cascade as the
+    implicit stage 0 -- verify the service actually responds (e.g. HTTP
+    200) before any judging.
+    """
+    return True, "ok"

@@ -6,7 +6,7 @@
 **定义目标，AI 自动构建、评估、迭代，直到达标。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-70%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-210%20passed-brightgreen.svg)]()
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)]()
 
 一个 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) Skill。你定义想要什么和怎么算好，AI 自己写代码、自己打分、不及格自己改，直到过线。灵感来自 [Anthropic 的 harness design](https://www.anthropic.com/engineering/harness-design-long-running-apps) 和 [Karpathy 的 autoresearch](https://github.com/karpathy/autoresearch)。
@@ -158,6 +158,8 @@ git log --oneline evolve/rest-api
 6. **Mentor 闭环** — 带执行结果回去让 Mentor 反思自己上次的诊断，迭代修正。
 7. **>200 LOC 重构强制 smoke gate** — 不带 e2e smoke 不能合（防 Codex 大改大合大灾难）。
 8. **派 C 前必 verify 服务 200** — frontend 500 / `.next` cache 腐坏会让所有 C 全维 0 分，伪装成产品 fix 副作用。
+9. **确定性级联先行** — 便宜的 build/lint/test/健康检查先跑、先挂先停，LLM 评审只在级联全过后才花钱；全 0 分再也不会伪装成产品回归。
+10. **卡住就分支，不再直接弃权** — ≥6 连败派 3 个候选并行试不同方案，全败才解锁 forced_pass（仍需你批准）；报告永远区分真 pass 和 forced。
 
 ## 核心概念
 
@@ -181,6 +183,9 @@ git log --oneline evolve/rest-api
 | `strategy.md` | C 的战略决策：方向、轨迹、下一步 | C（每轮覆写） |
 | `results.tsv` | 完整迭代记录 | B + C（只追加） |
 | `run.log` | 所有 Agent 输出 | O + B + C（只追加） |
+| `{feature}/cascade_fail.md` | 级联失败详情（哪个 stage、输出尾部） | C（每次失败覆写） |
+| `{feature}/branching.json` | 种群分支状态：轮次、候选、胜者 | O（经 population 函数） |
+| `{feature}/merge_conflict.md` | 集成门失败详情 | O（经 merge_feature） |
 
 **Adapter** — Init 时根据你的项目自动生成 `adapter.py`，告诉 Evolve 怎么跑你的项目。仓库里附了三个参考：
 
@@ -189,6 +194,13 @@ git log --oneline evolve/rest-api
 | `web_app.py` | Web 应用（FastAPI、Flask、Node） | 测试通过率 + LLM 评审 |
 | `teaching.py` | 教学内容 | 全 LLM 打分 |
 | `chat_agent.py` | 对话 AI agent（[OpenClaw](https://github.com/nicepkg/openclaw)） | 模拟对话 + LLM 打分 |
+
+**模型配置** —— 默认 B/C 走 codex（gpt-5.4-high）、H 用 Sonnet、M 用 Opus。
+全 Claude 家族的替代配置（B=Fable 5 / C=Opus 4.8 / H=Sonnet 5）见
+[docs/all-claude-profile.md](./docs/all-claude-profile.md)。
+Token 效率旋钮：`EVOLVE_EVIDENCE_CAP`（上轮证据截断，默认 6000 字符）、
+`EVOLVE_MANIFEST_MODEL`（manifest 摘要模型，默认 Haiku）；manifest 摘要
+带指纹缓存，无变化轮零 LLM 调用。
 
 ---
 
@@ -277,7 +289,7 @@ evolve 本质是个长跑游戏，会出岔子。以下是手动干预：
 
 | 情况 | 你说 | 效果 |
 |---|---|---|
-| 某 feature 烧 N 轮无解 | "≥N 轮没过的直接 forced_pass" | 批量 append pass 行 |
+| 某 feature 烧 N 轮无解 | "给它跑一轮分支" | ≥6 连败自动触发；全败后才可 forced_pass |
 | 某轮 C 全是 0 分 | "先看是不是 frontend 500" | 检查 `.next` cache，重启 |
 | Codex 卡死（>30min 0% CPU） | "kill 那个 codex 然后重派" | pkill + 派新的（任务拆小）|
 | Mentor 给的建议错了 | "带数据回去让 Mentor 反思" | 闭环让它自我修正 |
@@ -364,7 +376,7 @@ evolve 本质是个长跑游戏，会出岔子。以下是手动干预：
 ## 运行测试
 
 ```bash
-python -m pytest tests/ -v    # 70 个测试，约 0.1 秒
+python -m pytest tests/ -v    # 210 个测试，约 6 秒
 ```
 
 ## 许可证
